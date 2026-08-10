@@ -1,0 +1,82 @@
+{
+  "name": "bb-plugin-advisor",
+  "version": "0.1.0",
+  "description": "A persistent independent reviewer for bb coding threads.",
+  "license": "MIT",
+  "author": {
+    "name": "Salem Sayed Abdel Gawad",
+    "url": "https://github.com/salemsayed"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/salemsayed/bb-plugin-advisor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/salemsayed/bb-plugin-advisor/issues"
+  },
+  "homepage": "https://github.com/salemsayed/bb-plugin-advisor#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "app.tsx",
+    "server.ts",
+    "src/review.ts",
+    "dist/app.css",
+    "dist/app.js",
+    "dist/app.meta.json",
+    "dist/server.js",
+    "dist/server.meta.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "engines": {
+    "bb": ">=0.35",
+    "bbPluginSdk": "^0.4.1"
+  },
+  "bb": {
+    "name": "Advisor",
+    "description": "A persistent second-model reviewer for bb coding threads.",
+    "branding": {
+      "icon": "ShieldCheck"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "verify": "npm run typecheck && npm test && npm run build",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "bb-plugin",
+    "advisor",
+    "review"
+  ],
+  "dependencies": {
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@bb/plugin-sdk": "file:vendor/bb-plugin-sdk-0.4.2.tgz",
+    "@testing-library/react": "^16.3.2",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "bb-app": "0.36.0",
+    "better-sqlite3": "^12.0.0",
+    "cron-parser": "^5.5.0",
+    "hono": "^4.11.9",
+    "jsdom": "^29.0.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.1"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
+  }
+}

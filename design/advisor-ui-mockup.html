@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Advisor plugin — proposed UI</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@fontsource/inter@5/index.css"
+    />
+    <style>
+      /* ---------------------------------------------------------------
+         Tokens copied from apps/app/src/components/ui/theme.css so this
+         mockup renders in bb's real palette. Light + dark anchors only;
+         everything else derives from --canvas / --ink exactly as the app
+         does, so a custom palette (Nord, Dracula) would re-tint this too.
+         --------------------------------------------------------------- */
+      :root {
+        --canvas: oklch(1 0 0);
+        --ink: oklch(0.3211 0 0);
+        --radius: 0.5rem;
+        --font-sans: "Inter Variable", Inter, system-ui, sans-serif;
+        --font-mono: "Fira Code", ui-monospace, monospace;
+
+        --primary: oklch(0.27 0 0);
+        --primary-foreground: oklch(1 0 0);
+        --muted-foreground: oklch(0.44 0 0);
+        --subtle-foreground: oklch(0.5 0 0);
+        --readback-foreground: oklch(0.47 0 0);
+        --timeline-accent: oklch(0.55 0.1 250);
+
+        --destructive: oklch(0.45 0.19 25.8625);
+        --destructive-text: oklch(0.45 0.19 25.8625);
+        --attention: oklch(0.74 0.15 80);
+        --warning: oklch(0.7 0.16 50);
+        --warning-text: oklch(0.55 0.14 50);
+        --success: oklch(0.7 0.15 155);
+      }
+
+      .dark {
+        --canvas: oklch(0.195 0 0);
+        --ink: oklch(0.81 0 0);
+        --primary: oklch(0.82 0 0);
+        --muted-foreground: oklch(0.78 0 0);
+        --subtle-foreground: oklch(0.68 0 0);
+        --readback-foreground: oklch(0.72 0 0);
+        --timeline-accent: oklch(0.72 0.09 250);
+        --destructive: oklch(0.56 0.19 22.1703);
+        --destructive-text: oklch(0.65 0.16 22);
+        --attention: oklch(0.8 0.15 80);
+        --warning: oklch(0.75 0.16 50);
+        --warning-text: oklch(0.75 0.16 50);
+        --success: oklch(0.74 0.15 155);
+      }
+
+      /* Derived tokens — same formulas as theme.css */
+      :root,
+      .dark {
+        --background: var(--canvas);
+        --foreground: var(--ink);
+        --card: var(--canvas);
+        --secondary: color-mix(in oklch, var(--ink) 8%, var(--canvas));
+        --accent: color-mix(in oklch, var(--ink) 8%, var(--canvas));
+        --muted: color-mix(in oklch, var(--ink) 11%, var(--canvas));
+        --border: color-mix(in oklch, var(--ink) 14%, var(--canvas));
+        --border-seam: color-mix(in oklch, var(--ink) 9.5%, var(--canvas));
+        --input: color-mix(in oklch, var(--ink) 29.5%, var(--canvas));
+        --state-hover: color-mix(in oklab, var(--ink) 5.9%, transparent);
+        --surface-recessed: color-mix(in oklab, var(--ink) 6%, transparent);
+        --surface-raised-solid: color-mix(in oklab, var(--ink) 2.5%, var(--canvas));
+        --surface-destructive: color-mix(in oklab, var(--destructive) 6%, transparent);
+        --surface-destructive-border: color-mix(in oklab, var(--destructive) 25%, transparent);
+        --surface-attention: color-mix(in oklab, var(--attention) 12%, transparent);
+        --sidebar: color-mix(in oklch, var(--ink) 2.2%, var(--canvas));
+
+        --text-2xs: 0.625rem;
+        --text-xs: 0.75rem;
+        --text-sm: 0.8125rem;
+        --text-base: 0.9375rem;
+      }
+      .dark {
+        --sidebar: color-mix(in oklch, var(--ink) 4.3%, var(--canvas));
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: var(--font-sans);
+        font-size: var(--text-sm);
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .page { max-width: 1180px; margin: 0 auto; padding: 28px 24px 72px; }
+
+      .toolbar {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; margin-bottom: 28px;
+      }
+      .toolbar h1 { font-size: var(--text-base); font-weight: 600; margin: 0; }
+      .toolbar p {
+        margin: 4px 0 0; font-size: var(--text-xs); color: var(--muted-foreground);
+      }
+
+      .switch {
+        display: inline-flex; align-items: center; gap: 6px;
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-raised-solid); padding: 4px;
+      }
+      .switch button {
+        font: inherit; font-size: var(--text-xs); cursor: pointer;
+        border: 0; background: transparent; color: var(--muted-foreground);
+        padding: 4px 10px; border-radius: calc(var(--radius) - 2px);
+      }
+      .switch button[aria-pressed="true"] {
+        background: var(--secondary); color: var(--foreground); font-weight: 500;
+      }
+
+      /* ---- section scaffolding ---- */
+      .section { margin-bottom: 40px; }
+      .section > header { margin-bottom: 10px; }
+      .kicker {
+        font-size: var(--text-2xs); letter-spacing: 0.08em; text-transform: uppercase;
+        color: var(--subtle-foreground); font-weight: 600;
+      }
+      .section h2 { font-size: var(--text-base); font-weight: 600; margin: 3px 0 0; }
+      .section .why {
+        margin: 5px 0 0; font-size: var(--text-xs); color: var(--muted-foreground);
+        max-width: 78ch;
+      }
+      .slot {
+        display: inline-block; font-family: var(--font-mono);
+        font-size: var(--text-2xs); color: var(--muted-foreground);
+        background: var(--surface-recessed); border: 1px solid var(--border);
+        border-radius: 5px; padding: 1px 5px; margin-left: 6px;
+      }
+
+      /* ---- app chrome frame ---- */
+      .frame {
+        border: 1px solid var(--border-seam); border-radius: var(--radius);
+        overflow: hidden; background: var(--background);
+      }
+      .frame-head {
+        display: flex; align-items: center; gap: 10px;
+        padding: 0 12px; height: 44px;
+        border-bottom: 1px solid var(--border-seam);
+        background: var(--surface-raised-solid);
+      }
+      .frame-title {
+        font-size: var(--text-sm); font-weight: 500; min-width: 0;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .frame-head .spacer { flex: 1; }
+      .frame-body { padding: 16px; }
+
+      .icon-btn {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 28px; height: 28px; border-radius: calc(var(--radius) - 2px);
+        border: 1px solid transparent; background: transparent;
+        color: var(--muted-foreground); cursor: pointer;
+      }
+      .icon-btn:hover { background: var(--state-hover); }
+
+      /* ---- severity language ---- */
+      .chip {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-size: var(--text-2xs); font-weight: 600; letter-spacing: 0.02em;
+        text-transform: uppercase; padding: 2px 7px; border-radius: 999px;
+        border: 1px solid var(--border); color: var(--muted-foreground);
+        background: var(--surface-recessed); white-space: nowrap;
+      }
+      .dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; flex: none; }
+
+      .chip.blocker {
+        color: var(--destructive-text);
+        border-color: var(--surface-destructive-border);
+        background: var(--surface-destructive);
+      }
+      .chip.concern {
+        color: var(--warning-text);
+        border-color: color-mix(in oklab, var(--warning) 30%, transparent);
+        background: color-mix(in oklab, var(--warning) 10%, transparent);
+      }
+      .chip.nit {
+        color: var(--readback-foreground);
+        border-color: var(--border);
+        background: var(--surface-recessed);
+      }
+      .chip.pass {
+        color: color-mix(in oklch, var(--success) 45%, var(--ink));
+        border-color: color-mix(in oklab, var(--success) 28%, transparent);
+        background: color-mix(in oklab, var(--success) 10%, transparent);
+      }
+      .chip.unavailable {
+        color: var(--subtle-foreground);
+        border-style: dashed;
+        background: transparent;
+      }
+
+      /* ---- header badge ---- */
+      .hdr-badge {
+        display: inline-flex; align-items: center; gap: 6px; height: 28px;
+        padding: 0 8px; border-radius: calc(var(--radius) - 2px);
+        border: 1px solid var(--border); background: var(--surface-recessed);
+        font-size: var(--text-xs); color: var(--muted-foreground); cursor: pointer;
+      }
+      .hdr-badge:hover { background: var(--state-hover); }
+      .hdr-badge .shield { width: 13px; height: 13px; flex: none; }
+      .hdr-badge.blocker {
+        color: var(--destructive-text);
+        border-color: var(--surface-destructive-border);
+        background: var(--surface-destructive);
+      }
+      .count {
+        font-variant-numeric: tabular-nums; font-size: var(--text-2xs);
+        font-weight: 600; opacity: 0.85;
+      }
+
+      /* ---- generic card / banner ---- */
+      .card {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--card); overflow: hidden;
+      }
+      .banner {
+        border: 1px solid var(--border); border-radius: var(--radius);
+        background: var(--surface-recessed); padding: 12px 16px;
+        font-size: var(--text-xs); color: var(--muted-foreground);
+      }
+      .banner h3 {
+        margin: 0; font-size: var(--text-sm); font-weight: 600; color: var(--foreground);
+      }
+      .banner-actions {
+        margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px;
+        align-items: center; justify-content: flex-end;
+      }
+
+      .btn {
+        font: inherit; font-size: var(--text-xs); cursor: pointer;
+        height: 28px; padding: 0 10px; border-radius: calc(var(--radius) - 2px);
+        border: 1px solid var(--border); background: var(--card);
+        color: var(--foreground);
+      }
+      .btn:hover { background: var(--state-hover); }
+      .btn.primary {
+        background: var(--primary); color: var(--primary-foreground);
+        border-color: var(--primary);
+      }
+      .btn.quiet { border-color: transparent; background: transparent; color: var(--muted-foreground); }
+
+      /* ---- composer ---- */
+      .composer {
+        border: 1px solid var(--input); border-radius: var(--radius);
+        background: var(--card); padding: 10px 12px;
+      }
+      .composer .ph { color: var(--subtle-foreground); font-size: var(--text-sm); }
+      .composer-foot {
+        display: flex; align-items: center; gap: 8px; margin-top: 10px;
+        font-size: var(--text-2xs); color: var(--subtle-foreground);
+      }
+      .composer-foot .spacer { flex: 1; }
+      .send {
+        width: 24px; height: 24px; border-radius: 999px; border: 0;
+        background: var(--primary); color: var(--primary-foreground); cursor: pointer;
+        display: inline-flex; align-items: center; justify-content: center;
+      }
+
+      /* ---- timeline (tool call row) ---- */
+      .tl-row { display: flex; gap: 10px; align-items: flex-start; padding: 2px 0; }
+      .tl-rail {
+        width: 18px; flex: none; display: flex; justify-content: center;
+        color: var(--subtle-foreground); padding-top: 2px;
+      }
+      .tl-label { font-size: var(--text-xs); color: var(--readback-foreground); }
+      .tl-label b { font-weight: 500; color: var(--muted-foreground); }
+
+      /* verdict card that replaces the raw tool-result blob */
+      .verdict {
+        border: 1px solid var(--border); border-left: 2px solid var(--border);
+        border-radius: var(--radius); background: var(--card);
+        padding: 10px 12px; margin-top: 6px;
+      }
+      .verdict.blocker { border-left-color: var(--destructive); }
+      .verdict.concern { border-left-color: var(--warning); }
+      .verdict.pass    { border-left-color: var(--success); }
+      .verdict.unavailable { border-left-color: var(--subtle-foreground); border-left-style: dashed; }
+      .verdict-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .verdict-summary { font-size: var(--text-sm); font-weight: 500; }
+      .verdict-meta {
+        margin-top: 6px; font-size: var(--text-2xs); color: var(--subtle-foreground);
+        display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center;
+      }
+      .verdict-body {
+        margin: 8px 0 0; padding-left: 16px; font-size: var(--text-xs);
+        color: var(--muted-foreground);
+      }
+      .verdict-body li { margin: 3px 0; }
+      .verdict-body code {
+        font-family: var(--font-mono); font-size: 0.92em;
+        background: var(--surface-recessed); border-radius: 4px; padding: 0 3px;
+      }
+      .verdict-foot {
+        margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+        display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+      }
+
+      .repeat-note {
+        margin-top: 8px; border-radius: 6px; padding: 6px 8px;
+        font-size: var(--text-2xs);
+        border: 1px solid var(--surface-destructive-border);
+        background: var(--surface-destructive); color: var(--destructive-text);
+      }
+
+      /* ---- panel ---- */
+      .tabs {
+        display: flex; align-items: stretch; gap: 2px; padding: 0 6px;
+        border-bottom: 1px solid var(--border-seam);
+        background: var(--sidebar);
+      }
+      .tab {
+        display: inline-flex; align-items: center; gap: 6px; height: 36px;
+        padding: 0 10px; font-size: var(--text-xs); color: var(--muted-foreground);
+        border-bottom: 2px solid transparent; cursor: pointer;
+      }
+      .tab[aria-selected="true"] {
+        color: var(--foreground); font-weight: 500;
+        border-bottom-color: var(--primary); background: var(--background);
+      }
+
+      .review-row {
+        padding: 12px 14px; border-bottom: 1px solid var(--border);
+        cursor: pointer;
+      }
+      .review-row:last-child { border-bottom: 0; }
+      .review-row:hover { background: var(--state-hover); }
+      .review-row.is-open { background: var(--surface-recessed); }
+      .review-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .review-summary { font-size: var(--text-sm); font-weight: 500; flex: 1; min-width: 0; }
+      .review-meta {
+        margin-top: 5px; font-size: var(--text-2xs); color: var(--subtle-foreground);
+        display: flex; gap: 10px; flex-wrap: wrap;
+      }
+      .sep { color: var(--border); }
+
+      /* stacked edge = a repeat chain */
+      .stacked { position: relative; }
+      .stacked::before {
+        content: ""; position: absolute; left: 0; top: 6px; bottom: 6px;
+        width: 2px; border-radius: 2px;
+        background: repeating-linear-gradient(
+          to bottom,
+          var(--destructive) 0 4px,
+          transparent 4px 7px
+        );
+      }
+
+      .empty {
+        padding: 22px 14px; text-align: center;
+        font-size: var(--text-xs); color: var(--subtle-foreground);
+      }
+
+      /* embedded reviewer transcript */
+      .transcript {
+        border-top: 1px solid var(--border); background: var(--surface-recessed);
+        padding: 10px 14px;
+      }
+      .msg { display: flex; gap: 8px; padding: 5px 0; font-size: var(--text-xs); }
+      .msg .who {
+        flex: none; width: 60px; font-size: var(--text-2xs);
+        color: var(--subtle-foreground); padding-top: 1px;
+      }
+      .msg .what { color: var(--muted-foreground); min-width: 0; }
+      .msg .what .tool {
+        font-family: var(--font-mono); font-size: 0.92em; color: var(--readback-foreground);
+      }
+      .transcript-note {
+        margin-top: 8px; font-size: var(--text-2xs); color: var(--subtle-foreground);
+        display: flex; align-items: center; gap: 6px;
+      }
+
+      /* ---- sidebar row ---- */
+      .sb {
+        border: 1px solid var(--border-seam); border-radius: var(--radius);
+        background: var(--sidebar); padding: 6px; max-width: 320px;
+      }
+      .sb-row {
+        display: flex; align-items: center; gap: 8px; height: 30px;
+        padding: 0 8px; border-radius: calc(var(--radius) - 2px);
+        font-size: var(--text-xs);
+      }
+      .sb-row.sel { background: var(--secondary); }
+      .sb-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .sb-dot { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+      @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+
+      .note {
+        margin-top: 10px; font-size: var(--text-2xs); color: var(--subtle-foreground);
+        border-left: 2px solid var(--border); padding-left: 8px; max-width: 80ch;
+      }
+      .note b { color: var(--muted-foreground); font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="toolbar">
+        <div>
+          <h1>Advisor — proposed thread UI</h1>
+          <p>
+            Rendered with bb's own tokens from
+            <code style="font-family: var(--font-mono)">theme.css</code>. Every
+            surface below maps to a slot that exists in the plugin app SDK today.
+          </p>
+        </div>
+        <div class="switch" role="group" aria-label="Theme">
+          <button type="button" aria-pressed="true" onclick="setTheme('light', this)">Light</button>
+          <button type="button" aria-pressed="false" onclick="setTheme('dark', this)">Dark</button>
+        </div>
+      </div>
+
+      <!-- ============================================================ 1 -->
+      <section class="section">
+        <header>
+          <div class="kicker">1 · In the thread</div>
+          <h2>Verdict card, in place of the raw tool-result blob<span class="slot">tool result + threadHeaderAction</span></h2>
+          <p class="why">
+            The tool call already renders in the timeline. Today its result is a
+            wall of text where <em>pass</em> and <em>blocker</em> look identical.
+            The card keeps the same position and the same words — it just makes
+            severity, provenance and evidence scannable.
+          </p>
+        </header>
+
+        <div class="frame">
+          <div class="frame-head">
+            <span class="frame-title">Audit advisor plugin functionality and UI</span>
+            <span class="spacer"></span>
+            <!-- the header badge -->
+            <button class="hdr-badge blocker" type="button" title="Latest advisor verdict — click to open the Advisor panel">
+              <svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+              blocker <span class="count">×2</span>
+            </button>
+            <button class="icon-btn" title="Panel">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
+            </button>
+          </div>
+
+          <div class="frame-body">
+            <div class="tl-row">
+              <div class="tl-rail">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </div>
+              <div style="flex: 1; min-width: 0">
+                <div class="tl-label"><b>Consulted advisor</b> · 41s</div>
+
+                <div class="verdict blocker">
+                  <div class="verdict-head">
+                    <span class="chip blocker"><span class="dot"></span>blocker</span>
+                    <span class="verdict-summary">The claimed integration test did not run</span>
+                  </div>
+                  <div class="verdict-meta">
+                    <span>GPT-5.6-Luna · xhigh</span><span class="sep">·</span>
+                    <span>reviewed through message 42</span><span class="sep">·</span>
+                    <span>read 6 files</span>
+                  </div>
+                  <ul class="verdict-body">
+                    <li>
+                      <code>runReview</code> is asserted as covered, but
+                      <code>server.test.ts</code> has no case that reaches the
+                      timeout branch.
+                    </li>
+                    <li>Run the focused test and report its actual output.</li>
+                  </ul>
+                  <div class="verdict-foot">
+                    <button class="btn" type="button">Open in Advisor panel</button>
+                    <button class="btn quiet" type="button">Show the reviewer's work</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="height: 14px"></div>
+
+            <!-- repeat variant -->
+            <div class="tl-row">
+              <div class="tl-rail">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </div>
+              <div style="flex: 1; min-width: 0">
+                <div class="tl-label"><b>Consulted advisor</b> · 38s</div>
+                <div class="verdict blocker">
+                  <div class="verdict-head">
+                    <span class="chip blocker"><span class="dot"></span>blocker</span>
+                    <span class="verdict-summary">The claimed integration test did not run</span>
+                    <span class="chip" style="text-transform: none">flagged 2×</span>
+                  </div>
+                  <div class="verdict-meta">
+                    <span>GPT-5.6-Luna · xhigh</span><span class="sep">·</span>
+                    <span>reviewed through message 57</span>
+                  </div>
+                  <div class="repeat-note">
+                    <strong>Still unresolved.</strong> First raised at message 42.
+                    The agent was told and did not fix it.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="height: 14px"></div>
+
+            <!-- unavailable variant -->
+            <div class="tl-row">
+              <div class="tl-rail">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </div>
+              <div style="flex: 1; min-width: 0">
+                <div class="tl-label"><b>Consulted advisor</b> · 120s</div>
+                <div class="verdict unavailable">
+                  <div class="verdict-head">
+                    <span class="chip unavailable"><span class="dot"></span>unavailable</span>
+                    <span class="verdict-summary" style="color: var(--muted-foreground); font-weight: 400">
+                      Review did not finish within 120s — <strong>not an approval</strong>
+                    </span>
+                  </div>
+                  <div class="verdict-foot">
+                    <button class="btn" type="button">Raise timeout</button>
+                    <button class="btn quiet" type="button">Retry review</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p class="note">
+          <b>Caveat.</b> The SDK has no tool-result renderer slot, so the card
+          above is the one piece here that bb cannot render today —
+          <code>experimental_statusLabels</code> is two static strings. Until
+          that slot exists, the timeline keeps today's text and the card lives in
+          the panel. Everything else on this page is buildable now.
+        </p>
+      </section>
+
+      <!-- ============================================================ 2 -->
+      <section class="section">
+        <header>
+          <div class="kicker">2 · The invisible post-turn review</div>
+          <h2>Composer banner for carried advice<span class="slot">composer.customize → banners</span></h2>
+          <p class="why">
+            This is the real hole. Today a post-turn finding is injected into the
+            next turn's instructions and the human sees <em>nothing</em> — your
+            agent silently changes course. The banner sits exactly where the next
+            message gets written, and says what will be sent.
+          </p>
+        </header>
+
+        <div class="frame">
+          <div class="frame-head">
+            <span class="frame-title">Audit advisor plugin functionality and UI</span>
+            <span class="spacer"></span>
+            <button class="hdr-badge" type="button">
+              <svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+              concern
+            </button>
+          </div>
+          <div class="frame-body" style="background: var(--sidebar)">
+            <div class="banner" style="margin-bottom: 8px; background: var(--card)">
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                <span class="chip concern"><span class="dot"></span>concern</span>
+                <h3 style="flex: 1; min-width: 0">Advisor reviewed your last turn</h3>
+              </div>
+              <p style="margin: 8px 0 0">
+                <strong style="color: var(--foreground); font-weight: 500">The UI review is accurate, but the delegated reviewer used broader permissions than necessary.</strong>
+                This will be shared with the agent on your next message.
+              </p>
+              <div class="banner-actions">
+                <button class="btn quiet" type="button">Dismiss</button>
+                <button class="btn" type="button">View review</button>
+              </div>
+            </div>
+
+            <div class="composer">
+              <div class="ph">Reply to the thread…</div>
+              <div class="composer-foot">
+                <span>accept-edits</span><span class="sep">·</span><span>Opus 5</span>
+                <span class="spacer"></span>
+                <button class="send" type="button" aria-label="Send">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid2" style="margin-top: 18px">
+          <div>
+            <div class="kicker" style="margin-bottom: 8px">When you're not on the thread</div>
+            <div class="sb">
+              <div class="sb-row"><span class="sb-dot" style="background: var(--subtle-foreground)"></span><span class="name">Linux desktop updater</span></div>
+              <div class="sb-row sel">
+                <span class="sb-dot" style="background: var(--destructive)"></span>
+                <span class="name">Audit advisor plugin</span>
+                <span class="chip blocker" style="padding: 1px 5px">blocker</span>
+              </div>
+              <div class="sb-row"><span class="sb-dot" style="background: var(--success)"></span><span class="name">Customize BB sidebar</span></div>
+            </div>
+            <p class="note">
+              <b>Row status</b> via
+              <code>experimental_setThreadRowStatus</code>. Honest caveat: content
+              scripts get no <code>useRealtime</code> or <code>useRpc</code>, so
+              this needs fetch-polling today. I'd skip it in v1.
+            </p>
+          </div>
+
+          <div>
+            <div class="kicker" style="margin-bottom: 8px">Repeat only — escalate to a real interaction</div>
+            <div class="banner" style="border-color: var(--surface-destructive-border); background: var(--surface-destructive)">
+              <div style="display: flex; align-items: center; gap: 8px">
+                <span class="chip blocker"><span class="dot"></span>blocker · 2×</span>
+                <h3>Advisor needs you</h3>
+              </div>
+              <p style="margin: 8px 0 0; color: var(--foreground)">
+                The advisor flagged this last turn and the agent didn't resolve
+                it: <em>the claimed integration test did not run.</em>
+              </p>
+              <div class="banner-actions">
+                <button class="btn quiet" type="button">Dismiss</button>
+                <button class="btn primary" type="button">Address now</button>
+              </div>
+            </div>
+            <p class="note">
+              <b>Only on a repeat.</b> This uses
+              <code>bb.ui.requestInput</code> + the
+              <code>pendingInteraction</code> slot, which lights bb's native
+              attention state. It consumes the thread's single interaction slot
+              (409 if the agent needs to ask you something), so a first-time
+              finding must never use it.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ 3 -->
+      <section class="section">
+        <header>
+          <div class="kicker">3 · The panel</div>
+          <h2>Advisor tab — history, provenance, and the reviewer's own work<span class="slot">threadPanelAction (layout: flush) + ThreadChat</span></h2>
+          <p class="why">
+            The center of gravity. This is where <em>pass</em> rows are allowed to
+            live, where repeats chain into one card instead of repeating
+            themselves, and where the hidden reviewer thread becomes inspectable
+            without ever appearing in the sidebar.
+          </p>
+        </header>
+
+        <div class="frame" style="max-width: 560px">
+          <div class="tabs">
+            <div class="tab">Files</div>
+            <div class="tab">Diff</div>
+            <div class="tab" aria-selected="true">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+              Advisor
+            </div>
+          </div>
+
+          <div>
+            <!-- repeat chain, expanded -->
+            <div class="review-row is-open stacked" style="padding-left: 16px">
+              <div class="review-head">
+                <span class="chip blocker"><span class="dot"></span>blocker</span>
+                <span class="review-summary">The claimed integration test did not run</span>
+                <span class="chip" style="text-transform: none">2×</span>
+              </div>
+              <div class="review-meta">
+                <span>Still unresolved</span><span class="sep">·</span>
+                <span>first at message 42</span><span class="sep">·</span>
+                <span>GPT-5.6-Luna · xhigh</span>
+              </div>
+              <ul class="verdict-body">
+                <li><code>runReview</code>'s timeout branch has no test reaching it.</li>
+              </ul>
+
+              <div class="transcript" style="margin: 10px -14px -12px -16px">
+                <div class="msg"><span class="who">reviewer</span><span class="what">Reading <span class="tool">server.ts</span>, <span class="tool">server.test.ts</span></span></div>
+                <div class="msg"><span class="who">reviewer</span><span class="what">Searched for <span class="tool">timeoutSeconds</span> — 4 matches</span></div>
+                <div class="msg"><span class="who">reviewer</span><span class="what">No test drives <code>threads.wait</code> to rejection. Reporting blocker.</span></div>
+                <div class="transcript-note">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+                  Read-only transcript — <code>variant="timeline"</code>, no composer.
+                </div>
+              </div>
+            </div>
+
+            <div class="review-row">
+              <div class="review-head">
+                <span class="chip concern"><span class="dot"></span>concern</span>
+                <span class="review-summary">Delegated reviewer used broader permissions than needed</span>
+              </div>
+              <div class="review-meta">
+                <span>message 39</span><span class="sep">·</span><span>carried into next turn</span>
+              </div>
+            </div>
+
+            <div class="review-row">
+              <div class="review-head">
+                <span class="chip unavailable"><span class="dot"></span>unavailable</span>
+                <span class="review-summary" style="font-weight: 400; color: var(--muted-foreground)">Timed out after 120s — no review performed</span>
+              </div>
+              <div class="review-meta"><span>message 31</span></div>
+            </div>
+
+            <div class="review-row">
+              <div class="review-head">
+                <span class="chip pass"><span class="dot"></span>pass</span>
+                <span class="review-summary" style="font-weight: 400; color: var(--muted-foreground)">Migrations and fallback paths check out</span>
+              </div>
+              <div class="review-meta"><span>message 18</span></div>
+            </div>
+          </div>
+        </div>
+
+        <p class="note">
+          <b>Verified against bb source.</b>
+          <code>EmbeddedThreadChat.tsx</code> has no <code>visibility</code>
+          guard — only the sidebar filters hidden threads — so embedding the
+          hidden reviewer transcript works today with no backend change. The
+          thread stays out of the sidebar deliberately: it's an appliance, not a
+          peer.
+        </p>
+      </section>
+
+      <!-- ============================================================ 4 -->
+      <section class="section">
+        <header>
+          <div class="kicker">4 · Severity language</div>
+          <h2>One vocabulary across every surface</h2>
+          <p class="why">
+            Severity is carried by a chip with a dot, never by color alone, so it
+            survives both themes and colorblind users. <em>Unavailable</em> is
+            deliberately dashed and grey — it must never read as an approval.
+          </p>
+        </header>
+        <div class="card" style="padding: 16px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center">
+          <span class="chip blocker"><span class="dot"></span>blocker</span>
+          <span class="chip concern"><span class="dot"></span>concern</span>
+          <span class="chip nit"><span class="dot"></span>nit</span>
+          <span class="chip pass"><span class="dot"></span>pass</span>
+          <span class="chip unavailable"><span class="dot"></span>unavailable</span>
+          <span style="flex: 1"></span>
+          <span class="chip" style="text-transform: none">flagged 2× · still unresolved</span>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      function setTheme(mode, btn) {
+        document.documentElement.classList.toggle("dark", mode === "dark");
+        document.body.classList.toggle("dark", mode === "dark");
+        for (const b of btn.parentElement.querySelectorAll("button")) {
+          b.setAttribute("aria-pressed", String(b === btn));
+        }
+      }
+    </script>
+  </body>
+</html>
