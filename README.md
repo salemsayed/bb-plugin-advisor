@@ -2,12 +2,13 @@
 
 > A persistent, independent reviewer for bb coding threads.
 
+[![CI](https://github.com/salemsayed/bb-plugin-advisor/actions/workflows/ci.yml/badge.svg)](https://github.com/salemsayed/bb-plugin-advisor/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![bb ≥ 0.35](https://img.shields.io/badge/bb-%E2%89%A5%200.35-8b5cf6.svg)](#install)
+
 <p align="center">
   <img src="./docs/media/advisor-hero.svg" alt="Advisor — an independent reviewer on every coding thread" width="100%" />
 </p>
-
-[![CI](https://github.com/salemsayed/bb-plugin-advisor/actions/workflows/ci.yml/badge.svg)](https://github.com/salemsayed/bb-plugin-advisor/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 Advisor pairs every coding thread with a second model that reviews the work —
 before the agent finishes its answer, and again after the turn completes. The
@@ -25,19 +26,9 @@ that cannot run reports as *unavailable*, never as approval.
 | --- | --- |
 | ![Advisor panel showing an open finding with evidence and decision controls](./docs/media/panel.png) | ![Advisor history showing independently re-checked findings](./docs/media/history.png) |
 
-<details>
-<summary><strong>Configuration</strong></summary>
-
-![Advisor settings, including optional auto-continue and per-machine reviewer selection](./docs/media/settings.png)
-
-</details>
-
-<details>
-<summary><strong>Reviewer evidence</strong></summary>
-
-![Advisor's expanded reviewer output with a stable finding key and supporting evidence](./docs/media/reviewer-work.png)
-
-</details>
+<sub>The finding on the left is real: while this release was being prepared,
+Advisor reviewed the repository and flagged a stale screenshot in this very
+README. It was recaptured — the screenshot above is the replacement.</sub>
 
 ## Why
 
@@ -84,80 +75,6 @@ whole bounded queue into that turn — delivering one finding never silently
 consumes its siblings. Advice older than 24 hours is retired rather than
 injected stale.
 
-## The life of a finding
-
-The advisor assigns each finding a stable `key` naming the defect itself. A
-later round carrying the same key joins that finding's chain even when it is
-reworded or rated differently. Every finding carries its own lifecycle, shown
-in the thread panel:
-
-- **Queued** — found, but its text has not reached the primary agent yet.
-- **Sent to the agent** — set at the two moments the finding is actually
-  handed over: the tool result, and injection into the next turn's
-  instructions. *Sent is not resolved* — it only means the agent has seen the
-  text.
-- **Re-raised N×** — the advisor flagged it again, so it demonstrably was not
-  addressed.
-- **Advisor re-checked and closed it** — the reviewer is shown its own open
-  findings each round and may name keys on a `resolved:` line that it verified
-  are fixed. Silence never closes anything, it cannot close a key it did not
-  raise on this thread, and it cannot raise and close the same defect in one
-  result. Closure is provisional: a later round of the same key reopens the
-  chain, because a finding that comes back is a regression.
-- **Decided by the user** — **Not an issue** or **Won't fix**, with an
-  optional note, stored on the chain root. A user cannot self-certify a fix:
-  **Fixed** is established only when a later Advisor round re-checks and
-  closes the finding. (Existing legacy `fixed` decisions remain readable.) A
-  user decision is authoritative — later matching rounds stay in history but
-  never reopen it. Reopening clears the decision and any advisor closure
-  together.
-
-Findings resolved before decisions were recorded keep rendering as a plain
-dismissal rather than being backfilled with a guess.
-
-Matching normalized advice text is the fallback, used both when the advisor
-supplies no key and when a keyed finding misses — which is how a chain that
-predates keys stays continuous instead of splitting and softening on its first
-keyed round. That fallback applies only above a length floor: terse generic
-wording would otherwise merge unrelated findings and hand one an inherited
-severity it never earned.
-
-Reviews are persisted in the plugin's SQLite database, keyed by primary thread
-and timeline sequence. Deleting a primary thread deletes its review history;
-archiving keeps it.
-
-## When a review cannot run
-
-When the advisor cannot run — the provider does not support the reviewer's
-permission mode and no advisor model is configured, the reviewer thread fails
-to start, the review exceeds the timeout, or the primary turn fails or ends
-without a completed public answer — the tool reports `Advisor unavailable`
-with the reason. No review row is recorded, and pending advice from an earlier
-turn stays pending. A waiting **Review now** request is settled as unavailable
-and can be retried instead of remaining stuck. Cancelling the primary turn
-stops the reviewer thread.
-
-## The reviewer thread
-
-Reviewer threads are hidden and reused so the advisor keeps its own context. A
-session is bound to the environment it was spawned into; if the primary thread
-moves, the reviewer is respawned rather than left inspecting the old checkout.
-
-The reviewer's permission mode is negotiated per review against what the
-provider actually advertises, narrowest first: `readonly` when bb offers it,
-otherwise `accept-edits`. Pinning either would be wrong — `readonly` reports
-every review as unavailable on a bb released before that mode existed, and
-`accept-edits` keeps handing the reviewer workspace write access on a bb that
-has something narrower. A session spawned under a wider mode is retired rather
-than reused once a narrower one becomes available, so upgrading bb tightens
-the reviewer without any action.
-
-When the provider catalog cannot be read, the mode is probed narrowest-first
-rather than assumed: the reviewer asks for `readonly`, and only a refusal
-moves it to `accept-edits`. A mode the host accepted before is tried first, so
-the probe costs nothing on the common path. A transient outage therefore
-neither disables reviews nor silently widens them.
-
 ## Install
 
 Requires bb ≥ 0.35.
@@ -177,6 +94,8 @@ bb plugin install . --yes
 ## Configure
 
 All settings live in **Settings → Extensions → Advisor**.
+
+![Advisor settings, including optional auto-continue and per-machine reviewer selection](./docs/media/settings.png)
 
 | Setting | Default | Notes |
 | --- | --- | --- |
@@ -224,6 +143,104 @@ finding cannot create an unattended review loop.
 Place project-specific reviewer policy in `WATCHDOG.md` at the workspace root.
 The reviewer reads it before each review; the filename is configurable.
 
+## The life of a finding
+
+The advisor assigns each finding a stable `key` naming the defect itself. A
+later round carrying the same key joins that finding's chain even when it is
+reworded or rated differently.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    state "Re-raised" as Reraised
+    [*] --> Queued : advisor raises a finding
+    Queued --> Sent : tool result or next-turn injection
+    Sent --> Reraised : flagged again
+    Reraised --> Sent : held at strongest severity
+    Sent --> Closed : advisor re-checks and closes
+    Closed --> Reraised : same key returns
+    Sent --> Decided : user rules not an issue or won't fix
+    Closed --> [*]
+    Decided --> [*]
+```
+
+Every finding carries its own lifecycle, shown in the thread panel:
+
+- **Queued** — found, but its text has not reached the primary agent yet.
+- **Sent to the agent** — set at the two moments the finding is actually
+  handed over: the tool result, and injection into the next turn's
+  instructions. *Sent is not resolved* — it only means the agent has seen the
+  text.
+- **Re-raised N×** — the advisor flagged it again, so it demonstrably was not
+  addressed.
+- **Advisor re-checked and closed it** — the reviewer is shown its own open
+  findings each round and may name keys on a `resolved:` line that it verified
+  are fixed. Silence never closes anything, it cannot close a key it did not
+  raise on this thread, and it cannot raise and close the same defect in one
+  result. Closure is provisional: a later round of the same key reopens the
+  chain, because a finding that comes back is a regression.
+- **Decided by the user** — **Not an issue** or **Won't fix**, with an
+  optional note, stored on the chain root. A user cannot self-certify a fix:
+  **Fixed** is established only when a later Advisor round re-checks and
+  closes the finding. (Existing legacy `fixed` decisions remain readable.) A
+  user decision is authoritative — later matching rounds stay in history but
+  never reopen it. Reopening clears the decision and any advisor closure
+  together.
+
+Findings resolved before decisions were recorded keep rendering as a plain
+dismissal rather than being backfilled with a guess.
+
+Matching normalized advice text is the fallback, used both when the advisor
+supplies no key and when a keyed finding misses — which is how a chain that
+predates keys stays continuous instead of splitting and softening on its first
+keyed round. That fallback applies only above a length floor: terse generic
+wording would otherwise merge unrelated findings and hand one an inherited
+severity it never earned.
+
+Reviews are persisted in the plugin's SQLite database, keyed by primary thread
+and timeline sequence. Deleting a primary thread deletes its review history;
+archiving keeps it.
+
+<details>
+<summary><strong>Reviewer evidence</strong> — every finding links to the reviewer's own workings</summary>
+<br />
+
+![Advisor's expanded reviewer output with a stable finding key and supporting evidence](./docs/media/reviewer-work.png)
+
+</details>
+
+## When a review cannot run
+
+When the advisor cannot run — the provider does not support the reviewer's
+permission mode and no advisor model is configured, the reviewer thread fails
+to start, the review exceeds the timeout, or the primary turn fails or ends
+without a completed public answer — the tool reports `Advisor unavailable`
+with the reason. No review row is recorded, and pending advice from an earlier
+turn stays pending. A waiting **Review now** request is settled as unavailable
+and can be retried instead of remaining stuck. Cancelling the primary turn
+stops the reviewer thread.
+
+## The reviewer thread
+
+Reviewer threads are hidden and reused so the advisor keeps its own context. A
+session is bound to the environment it was spawned into; if the primary thread
+moves, the reviewer is respawned rather than left inspecting the old checkout.
+
+The reviewer's permission mode is negotiated per review against what the
+provider actually advertises, narrowest first: `readonly` when bb offers it,
+otherwise `accept-edits`. Pinning either would be wrong — `readonly` reports
+every review as unavailable on a bb released before that mode existed, and
+`accept-edits` keeps handing the reviewer workspace write access on a bb that
+has something narrower. A session spawned under a wider mode is retired rather
+than reused once a narrower one becomes available, so upgrading bb tightens
+the reviewer without any action.
+
+When the provider catalog cannot be read, the mode is probed narrowest-first
+rather than assumed: the reviewer asks for `readonly`, and only a refusal
+moves it to `accept-edits`. A mode the host accepted before is tried first, so
+the probe costs nothing on the common path. A transient outage therefore
+neither disables reviews nor silently widens them.
+
 ## Inspect
 
 ```sh
@@ -234,10 +251,11 @@ bb plugin logs advisor -f
 
 ## Security and trust
 
-Like every bb plugin, Advisor is full-trust code: its server runs inside your
-bb server, not in a sandbox, with access to the plugin SDK, its own database,
-and thread orchestration. Read the source before installing — this repository
-is small on purpose.
+> [!IMPORTANT]
+> Like every bb plugin, Advisor is full-trust code: its server runs inside
+> your bb server, not in a sandbox, with access to the plugin SDK, its own
+> database, and thread orchestration. Read the source before installing —
+> this repository is small on purpose.
 
 The reviewer itself is constrained by the negotiated permission mode, with one
 caveat: bb only gained a first-class `readonly` mode recently, so on an older
@@ -248,6 +266,8 @@ remains the provider's responsibility, so provider-specific non-workspace
 capabilities must still be assessed by that provider.
 
 ## Development
+
+Requires Node 22.
 
 ```sh
 npm ci
