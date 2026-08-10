@@ -16,6 +16,10 @@ reviewer runs in its own hidden thread with its own context, remembers what it
 has already flagged, and escalates when the same defect comes back. A review
 that cannot run reports as *unavailable*, never as approval.
 
+Advisor is a bb port of the advisor from
+[oh-my-pi](https://github.com/can1357/oh-my-pi) — the design is theirs. See
+[Credits](#credits).
+
 <p align="center">
   <a href="https://cdn.jsdelivr.net/gh/salemsayed/bb-plugin-advisor@main/docs/media/advisor-promo.mp4"><strong>Play the 22-second demo →</strong></a>
   <br />
@@ -277,6 +281,18 @@ npm pack --dry-run
 
 The GitHub Actions workflow runs the same typecheck, test, build, and package
 checks on pushes to `main` and on pull requests.
+
+## Credits
+
+The advisor concept — a persistent second model that reviews the primary
+agent's work, holds findings across turns, and injects advice back into the
+conversation — originates in [oh-my-pi](https://github.com/can1357/oh-my-pi)
+by can1357. This plugin is a re-implementation of that design on bb's plugin
+surface; the ideas are omp's, the bb-specific code is new.
+
+[pi-omplike-advisor](https://github.com/pasky/pi-omplike-advisor) by pasky
+ports the same design to upstream pi and is worth reading for its own take on
+advice delivery and advisor context management.
 
 ## License
 
