@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="600" viewBox="0 0 1600 600" role="img" aria-labelledby="title desc">
+  <title id="title">Advisor — an independent reviewer on every coding thread</title>
+  <desc id="desc">Dark gradient banner with the Advisor shield and a finding moving from must fix to verified.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#080d16"/>
+      <stop offset="0.55" stop-color="#101426"/>
+      <stop offset="1" stop-color="#081419"/>
+    </linearGradient>
+    <radialGradient id="violetGlow" cx="0.25" cy="0.2" r="0.8">
+      <stop offset="0" stop-color="#8b5cf6" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="greenGlow" cx="0.8" cy="0.65" r="0.7">
+      <stop offset="0" stop-color="#91d18b" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#91d18b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="28" flood-color="#000" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="600" rx="28" fill="url(#bg)"/>
+  <rect width="1600" height="600" rx="28" fill="url(#violetGlow)"/>
+  <rect width="1600" height="600" rx="28" fill="url(#greenGlow)"/>
+  <path d="M0 112H1600M0 224H1600M0 336H1600M0 448H1600M220 0V600M440 0V600M660 0V600M880 0V600M1100 0V600M1320 0V600" stroke="#fff" stroke-opacity="0.025"/>
+
+  <g transform="translate(92 78)">
+    <rect width="72" height="72" rx="20" fill="url(#mark)" filter="url(#shadow)"/>
+    <path d="M36 17 53 24v12c0 11-6.7 20.7-17 26-10.3-5.3-17-15-17-26V24l17-7Z" fill="none" stroke="#fff" stroke-width="4"/>
+    <path d="m27 37 6 6 13-14" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="96" y="50" fill="#f8fafc" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="40" font-weight="760">Advisor</text>
+  </g>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif">
+    <text x="92" y="252" fill="#a78bfa" font-size="21" font-weight="760" letter-spacing="4">INDEPENDENT REVIEW, INSIDE BB</text>
+    <text x="92" y="332" fill="#f8fafc" font-size="62" font-weight="780" letter-spacing="-2.8">An independent reviewer</text>
+    <text x="92" y="400" fill="#f8fafc" font-size="62" font-weight="780" letter-spacing="-2.8">on every coding thread.</text>
+    <text x="92" y="472" fill="#9ba8ba" font-size="27">Find it. Track it. Re-check the fix.</text>
+  </g>
+
+  <g transform="translate(1035 104)" font-family="Inter, ui-sans-serif, system-ui, sans-serif" filter="url(#shadow)">
+    <rect width="452" height="392" rx="26" fill="#111827" stroke="#ffffff" stroke-opacity="0.1"/>
+    <g transform="translate(34 36)">
+      <rect width="106" height="30" rx="15" fill="#ff5e62" fill-opacity="0.12" stroke="#ff5e62" stroke-opacity="0.5"/>
+      <circle cx="16" cy="15" r="5" fill="#ff5e62"/>
+      <text x="30" y="20" fill="#ff7b7e" font-size="13" font-weight="760" letter-spacing="1">MUST FIX</text>
+      <rect x="0" y="58" width="364" height="15" rx="7.5" fill="#e5e7eb" fill-opacity="0.92"/>
+      <rect x="0" y="86" width="312" height="11" rx="5.5" fill="#94a3b8" fill-opacity="0.7"/>
+      <rect x="0" y="108" width="338" height="11" rx="5.5" fill="#94a3b8" fill-opacity="0.48"/>
+      <path d="M12 155v60c0 18 14 32 32 32h18" fill="none" stroke="#566277" stroke-width="2" stroke-dasharray="5 6"/>
+      <circle cx="12" cy="155" r="6" fill="#ff5e62"/>
+      <circle cx="65" cy="247" r="6" fill="#91d18b"/>
+      <rect x="88" y="214" width="168" height="30" rx="15" fill="#91d18b" fill-opacity="0.12" stroke="#91d18b" stroke-opacity="0.5"/>
+      <text x="107" y="234" fill="#a5dda0" font-size="13" font-weight="760" letter-spacing="1">VERIFIED CLOSED</text>
+      <rect x="88" y="263" width="276" height="11" rx="5.5" fill="#94a3b8" fill-opacity="0.55"/>
+      <rect x="88" y="286" width="224" height="11" rx="5.5" fill="#94a3b8" fill-opacity="0.35"/>
+    </g>
+  </g>
+</svg>
