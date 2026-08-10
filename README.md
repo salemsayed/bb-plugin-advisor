@@ -16,7 +16,9 @@ has already flagged, and escalates when the same defect comes back. A review
 that cannot run reports as *unavailable*, never as approval.
 
 <p align="center">
-  <a href="./docs/media/advisor-promo.mp4"><strong>Watch the 22-second demo →</strong></a>
+  <a href="https://cdn.jsdelivr.net/gh/salemsayed/bb-plugin-advisor@main/docs/media/advisor-promo.mp4"><strong>Play the 22-second demo →</strong></a>
+  <br />
+  <sub>Opens in your browser's video player with sound.</sub>
 </p>
 
 | Finding, evidence, and decisions | Re-checked and closed |
