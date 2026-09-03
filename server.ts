@@ -17,6 +17,16 @@ import {
 
 const PLUGIN_ID = "advisor";
 const ADVISOR_TOOL = "advisor_review";
+
+// Spread rather than inlined: `presentation` replaced `experimental_statusLabels`
+// in SDK 0.4.16, but the vendored 0.4.2 declarations in types/ do not describe it
+// yet, so an inline literal trips the excess-property check. See the PR notes on
+// `bb plugin migrate` for the follow-up that makes this typed.
+const ADVISOR_TOOL_PRESENTATION = {
+  presentation: {
+    label: { pending: "Consulting advisor", completed: "Consulted advisor" },
+  },
+};
 const ADVISOR_TITLE_PREFIX = "Advisor · ";
 /**
  * Permission modes the reviewer will accept, least privileged first. The mode
@@ -1585,10 +1595,7 @@ export default async function plugin(bb: BbPluginApi) {
       "Run an independent review-only model pass on this thread and return concrete issues before finalizing.",
     instructions:
       "For substantial coding work, call advisor_review exactly once after implementation and verification but before the final answer. Address concern/blocker feedback before completing.",
-    experimental_statusLabels: {
-      pending: "Consulting advisor",
-      completed: "Consulted advisor",
-    },
+    ...ADVISOR_TOOL_PRESENTATION,
     parameters: z.object({
       focus: z
         .string()
