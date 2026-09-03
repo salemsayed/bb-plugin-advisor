@@ -74,6 +74,182 @@ function panel(reviews: unknown[], extra: Record<string, unknown> = {}) {
   };
 }
 
+// Looked up by id rather than by position: the switch and the pending-advice
+// banner are separate registrations, and an index would silently follow a
+// reorder into the wrong one.
+const switchCustomization = app.composerCustomizations.find(
+  (customization) => customization.id === "advisor-switch",
+)!;
+const toggleSlot = switchCustomization.actions![0]!;
+const threadComposer = {
+  scope: { kind: "thread", threadId: "t1" } as const,
+};
+const newThreadComposer = {
+  scope: { kind: "new-thread", projectId: "p1" } as const,
+};
+
+describe("advisor thread switch", () => {
+  it("reports the effective state of a thread that follows the default", async () => {
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: threadComposer,
+      rpc: {
+        threadToggle: () => ({
+          enabled: false,
+          override: null,
+          globalEnabled: false,
+        }),
+      },
+    });
+
+    const control = await q(slot).findByRole("switch");
+    // The switch shows what actually happens in this thread, not whether the
+    // user picked it — a thread following a disabled default reads as off.
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    expect(control.getAttribute("aria-label")).toBe("Advisor off");
+  });
+
+  it("writes an explicit override for this thread when clicked", async () => {
+    let stored: { enabled: boolean | null } = { enabled: null };
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: threadComposer,
+      rpc: {
+        threadToggle: () => ({
+          enabled: stored.enabled ?? true,
+          override: stored.enabled,
+          globalEnabled: true,
+        }),
+        setThreadToggle: (input) => {
+          stored = { enabled: input.enabled };
+          return {
+            enabled: input.enabled ?? true,
+            override: input.enabled,
+            globalEnabled: true,
+          };
+        },
+      },
+    });
+
+    fireEvent.click(await q(slot).findByRole("switch"));
+
+    await waitFor(() =>
+      expect(q(slot).getByRole("switch").getAttribute("aria-checked")).toBe(
+        "false",
+      ),
+    );
+    expect(
+      slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle"),
+    ).toEqual([
+      { method: "setThreadToggle", input: { threadId: "t1", enabled: false } },
+    ]);
+  });
+
+  it("snaps back instead of claiming a switch the server rejected", async () => {
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: threadComposer,
+      rpc: {
+        threadToggle: () => ({
+          enabled: true,
+          override: null,
+          globalEnabled: true,
+        }),
+        setThreadToggle: () => {
+          throw new Error("plugin unavailable");
+        },
+      },
+    });
+
+    fireEvent.click(await q(slot).findByRole("switch"));
+
+    // The advisor still runs, so the surface must not show an "off" switch.
+    await waitFor(() => expect(q(slot).queryByRole("switch")).toBeNull());
+    expect(
+      (await q(slot).findByRole("button")).getAttribute("title"),
+    ).toContain("plugin unavailable");
+  });
+
+  it("names what it does on hover without waiting for the native tooltip", async () => {
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: threadComposer,
+      rpc: {
+        threadToggle: () => ({
+          enabled: true,
+          override: null,
+          globalEnabled: true,
+        }),
+      },
+    });
+
+    expect((await q(slot).findByRole("tooltip")).textContent).toBe("Advisor on");
+    // A native `title` alongside it would surface a second, slower duplicate.
+    expect(q(slot).getByRole("switch").getAttribute("title")).toBeNull();
+  });
+
+  it("arms the choice for the thread a composer without one will create", async () => {
+    let stored: boolean | null = null;
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: newThreadComposer,
+      rpc: {
+        newThreadToggle: () => ({
+          enabled: stored ?? true,
+          override: stored,
+          globalEnabled: true,
+        }),
+        setNewThreadToggle: (input) => {
+          stored = input.enabled;
+          return {
+            enabled: input.enabled ?? true,
+            override: input.enabled,
+            globalEnabled: true,
+          };
+        },
+      },
+    });
+
+    // Singular on purpose: a plural label would promise a standing default,
+    // and the choice is spent by the one thread this composer creates.
+    expect((await q(slot).findByRole("tooltip")).textContent).toBe(
+      "Advisor on for this new thread",
+    );
+
+    fireEvent.click(q(slot).getByRole("switch"));
+
+    await waitFor(() =>
+      expect(q(slot).getByRole("switch").getAttribute("aria-checked")).toBe(
+        "false",
+      ),
+    );
+    // Never the per-thread method: there is no thread to attach a choice to.
+    expect(slot.inspection.rpcCalls.map((call) => call.method)).not.toContain(
+      "setThreadToggle",
+    );
+    expect(stored).toBe(false);
+  });
+
+  it("renders nothing in a composer scope it has no answer for", async () => {
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: {
+        scope: {
+          kind: "side-chat",
+          projectId: "p1",
+          parentThreadId: "t1",
+          tabId: "tab1",
+          childThreadId: null,
+        } as const,
+      },
+      rpc: {
+        threadToggle: () => ({
+          enabled: true,
+          override: null,
+          globalEnabled: true,
+        }),
+      },
+    });
+
+    await waitFor(() => expect(slot.container.firstChild).toBeNull());
+    expect(slot.inspection.rpcCalls).toEqual([]);
+  });
+});
+
 describe("advisor header badge", () => {
   it("keeps advertising an open blocker after a later turn passes", async () => {
     // The whole point: a clean turn does not close an earlier finding, and the

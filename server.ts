@@ -184,10 +184,50 @@ const reviewLifecycleSchema = z.enum([
   "unavailable",
 ]);
 
+/**
+ * Whether the advisor runs for one thread. `override` is null when the thread
+ * carries no per-thread choice and simply follows the global setting, so a
+ * surface can say "following the default" instead of presenting the default as
+ * something the user picked for this thread.
+ */
+const threadToggleSchema = z.object({
+  enabled: z.boolean(),
+  override: z.boolean().nullable(),
+  globalEnabled: z.boolean(),
+});
+
 export const rpcContract = defineRpcContract({
   modelConfiguration: {
     input: z.null(),
     output: modelConfigurationOutputSchema,
+  },
+  threadToggle: {
+    input: threadTargetSchema,
+    output: threadToggleSchema,
+  },
+  setThreadToggle: {
+    input: z
+      .object({
+        threadId: z.string().min(1),
+        // Null clears the override and returns the thread to the global
+        // default, which is the only way back once a thread has been pinned.
+        enabled: z.boolean().nullable(),
+      })
+      .strict(),
+    output: threadToggleSchema,
+  },
+  /**
+   * The same switch in a composer that has no thread to attach it to yet.
+   * `override` is the choice armed for the next thread, which that thread
+   * consumes; it is not a persistent default.
+   */
+  newThreadToggle: {
+    input: z.null(),
+    output: threadToggleSchema,
+  },
+  setNewThreadToggle: {
+    input: z.object({ enabled: z.boolean().nullable() }).strict(),
+    output: threadToggleSchema,
   },
   threadReviews: {
     input: threadTargetSchema,
@@ -679,6 +719,10 @@ export default async function plugin(bb: BbPluginApi) {
   let currentSettings = parseRuntimeSettings(await settings.get());
   settings.onChange((next) => {
     currentSettings = parseRuntimeSettings(next);
+    // Threads that follow the global default have no thread-scoped event to
+    // wake them, so their toggle would keep showing the previous default until
+    // a remount.
+    bb.realtime.publish("advisor-settings-changed", {});
   });
 
   const db = bb.storage.database();
@@ -772,6 +816,23 @@ export default async function plugin(bb: BbPluginApi) {
     // cannot create an unattended agent/reviewer loop.
     `ALTER TABLE advisor_reviews ADD COLUMN continued_at INTEGER`,
     `ALTER TABLE advisor_reviews ADD COLUMN auto_continued_at INTEGER`,
+    // Per-thread override of the global "Enable advisor" switch. Absence of a
+    // row is meaningful — it is "follow the global setting", not "off" — so the
+    // default can still be changed for every thread that never opted out.
+    `CREATE TABLE IF NOT EXISTS advisor_thread_settings (
+      primary_thread_id TEXT PRIMARY KEY,
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      updated_at INTEGER NOT NULL
+    )`,
+    // The choice the new-thread composer's switch has armed for the next
+    // thread, if any. Single row by construction, and cleared as soon as a
+    // thread consumes it — see readPendingNewThreadChoice for why this is not
+    // a stored default.
+    `CREATE TABLE IF NOT EXISTS advisor_new_thread_default (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      updated_at INTEGER NOT NULL
+    )`,
   ]);
 
   const primaryContexts = new Map<string, PrimaryContext>();
@@ -818,6 +879,118 @@ export default async function plugin(bb: BbPluginApi) {
    */
   function publishThreadChanged(primaryThreadId: string): void {
     bb.realtime.publish("thread-changed", { threadId: primaryThreadId });
+  }
+
+  const threadToggleRowSchema = z.object({ enabled: z.number().int() });
+
+  /** The thread's own choice, or null when it follows the global setting. */
+  function readThreadOverride(primaryThreadId: string): boolean | null {
+    const parsed = threadToggleRowSchema.safeParse(
+      db
+        .prepare(
+          `SELECT enabled FROM advisor_thread_settings WHERE primary_thread_id = ?`,
+        )
+        .get(primaryThreadId),
+    );
+    return parsed.success ? parsed.data.enabled === 1 : null;
+  }
+
+  function writeThreadOverride(
+    primaryThreadId: string,
+    enabled: boolean | null,
+  ): void {
+    if (enabled === null) {
+      db.prepare(
+        `DELETE FROM advisor_thread_settings WHERE primary_thread_id = ?`,
+      ).run(primaryThreadId);
+      return;
+    }
+    db.prepare(
+      `INSERT INTO advisor_thread_settings (primary_thread_id, enabled, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(primary_thread_id) DO UPDATE
+         SET enabled = excluded.enabled, updated_at = excluded.updated_at`,
+    ).run(primaryThreadId, enabled ? 1 : 0, Date.now());
+  }
+
+  /**
+   * The one question every gate asks. An override wins in both directions: the
+   * global setting is the default for threads that never chose, not a ceiling,
+   * so a single thread can still run the advisor while it is off everywhere
+   * else.
+   */
+  function advisorEnabledFor(primaryThreadId: string): boolean {
+    return readThreadOverride(primaryThreadId) ?? currentSettings.enabled;
+  }
+
+  /**
+   * The choice armed for the next thread, or null when none is waiting.
+   *
+   * Deliberately single-use rather than a stored default: a value that survived
+   * being applied would be a second global setting shadowing the real one, with
+   * no way back to it — and it would keep answering for threads created weeks
+   * later, long after the composer that set it was forgotten. A persistent
+   * default belongs in the plugin's own settings, which already carry one.
+   */
+  function readPendingNewThreadChoice(): boolean | null {
+    const parsed = threadToggleRowSchema.safeParse(
+      db.prepare(`SELECT enabled FROM advisor_new_thread_default WHERE id = 1`).get(),
+    );
+    return parsed.success ? parsed.data.enabled === 1 : null;
+  }
+
+  function writePendingNewThreadChoice(enabled: boolean | null): void {
+    if (enabled === null) {
+      db.prepare(`DELETE FROM advisor_new_thread_default WHERE id = 1`).run();
+      return;
+    }
+    db.prepare(
+      `INSERT INTO advisor_new_thread_default (id, enabled, updated_at)
+       VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE
+         SET enabled = excluded.enabled, updated_at = excluded.updated_at`,
+    ).run(enabled ? 1 : 0, Date.now());
+  }
+
+  /** Read and clear in one step, so exactly one thread can consume a choice. */
+  function consumePendingNewThreadChoice(): boolean | null {
+    const pending = readPendingNewThreadChoice();
+    if (pending !== null) writePendingNewThreadChoice(null);
+    return pending;
+  }
+
+  function newThreadToggleState() {
+    const override = readPendingNewThreadChoice();
+    return {
+      enabled: override ?? currentSettings.enabled,
+      override,
+      globalEnabled: currentSettings.enabled,
+    };
+  }
+
+  function describeThreadToggle(primaryThreadId: string): string {
+    const { enabled, override } = threadToggleState(primaryThreadId);
+    const state = enabled ? "enabled" : "disabled";
+    return override === null
+      ? `${state} (following the default)`
+      : `${state} (set for this thread)`;
+  }
+
+  function describeNewThreadToggle(): string {
+    const { enabled, override } = newThreadToggleState();
+    const state = enabled ? "enabled" : "disabled";
+    return override === null
+      ? `${state} (following the default)`
+      : `${state} (armed in the composer for the next thread only)`;
+  }
+
+  function threadToggleState(primaryThreadId: string) {
+    const override = readThreadOverride(primaryThreadId);
+    return {
+      enabled: override ?? currentSettings.enabled,
+      override,
+      globalEnabled: currentSettings.enabled,
+    };
   }
 
   function readChainRoot(
@@ -1335,6 +1508,28 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     modelConfiguration,
 
+    threadToggle({ threadId }) {
+      return threadToggleState(threadId);
+    },
+
+    setThreadToggle({ threadId, enabled }) {
+      writeThreadOverride(threadId, enabled);
+      publishThreadChanged(threadId);
+      return threadToggleState(threadId);
+    },
+
+    newThreadToggle() {
+      return newThreadToggleState();
+    },
+
+    setNewThreadToggle({ enabled }) {
+      writePendingNewThreadChoice(enabled);
+      // No thread id to scope this to, so the surfaces that show it listen on
+      // the settings channel instead.
+      bb.realtime.publish("advisor-settings-changed", {});
+      return newThreadToggleState();
+    },
+
     threadReviews({ threadId }) {
       return {
         reviews: collapseChains(readThreadRows(threadId)),
@@ -1600,6 +1795,14 @@ export default async function plugin(bb: BbPluginApi) {
         .describe("What changed, what was verified, and any uncertainty the advisor should examine"),
     }),
     async execute({ focus }, context) {
+      // The tool set is not hot-mutated: bb hands it to a provider session when
+      // that session starts or resumes, so a thread switched off mid-session
+      // can still be holding this tool from when it was on. Re-reading the
+      // switch here is what makes "off" actually mean off, rather than "off
+      // once the session happens to restart".
+      if (!advisorEnabledFor(context.threadId)) {
+        return "Advisor is switched off for this thread, so no review ran. This is not an approval — nothing was checked. Finish your work as you normally would.";
+      }
       // The gate is mandatory, so it must always answer. An unexpected throw
       // would surface as a raw tool error rather than the explicit
       // "unavailable, and this is not approval" contract the agent relies on.
@@ -1653,7 +1856,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.agents.configure((context) => {
     const isPluginOwnedThread = context.origin.pluginId !== null;
-    if (isPluginOwnedThread || !currentSettings.enabled) {
+    if (isPluginOwnedThread || !advisorEnabledFor(context.thread.id)) {
       return { tools: [], skills: [] };
     }
 
@@ -2372,7 +2575,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (toolReviewed) return;
     if (
-      !currentSettings.enabled ||
+      !advisorEnabledFor(thread.id) ||
       !currentSettings.autoReview ||
       !lastAssistantText ||
       thread.visibility === "hidden" ||
@@ -2438,6 +2641,9 @@ export default async function plugin(bb: BbPluginApi) {
       db.prepare(`DELETE FROM advisor_sessions WHERE primary_thread_id = ?`).run(
         thread.id,
       );
+      db.prepare(
+        `DELETE FROM advisor_thread_settings WHERE primary_thread_id = ?`,
+      ).run(thread.id);
     }
 
     // The hidden reviewer is archived either way: it is an appliance of the
@@ -2448,6 +2654,31 @@ export default async function plugin(bb: BbPluginApi) {
         .catch(() => undefined);
     }
   }
+
+  /**
+   * Hand the armed choice to the thread it was armed for, and clear it. Doing
+   * this at creation rather than lazily in the gate is what keeps the switch
+   * honest in both directions: threads that already existed are untouched, and
+   * the next one after this is back to following the plugin's own setting.
+   */
+  bb.events.on("thread.created", ({ thread }) => {
+    // Reviewer threads and other plugins' worker threads are created through
+    // this same event. Neither is the thread the user armed the switch for, so
+    // letting one consume the choice would silently spend it on the wrong
+    // thread — and hand the advisor's own reviewer the gate it exists to answer.
+    if (thread.originPluginId !== null) return;
+    // A thread that somehow already carries a choice keeps it, but the armed
+    // one is still spent: it was aimed at this thread either way.
+    const pending = consumePendingNewThreadChoice();
+    if (pending === null) return;
+    if (readThreadOverride(thread.id) === null) {
+      writeThreadOverride(thread.id, pending);
+    }
+    publishThreadChanged(thread.id);
+    // Snaps every open new-thread composer's switch back to the setting, so it
+    // never keeps advertising a choice that has already been spent.
+    bb.realtime.publish("advisor-settings-changed", {});
+  });
 
   bb.events.on("thread.deleted", ({ thread }) => retireThread(thread, true));
   bb.events.on("thread.archived", ({ thread }) => retireThread(thread, false));
@@ -2466,13 +2697,47 @@ export default async function plugin(bb: BbPluginApi) {
         summary: "Show recent advisor reviews",
         usage: "bb advisor reviews [thread-id]",
       },
+      {
+        name: "enable",
+        summary: "Run the advisor in one thread, whatever the global setting is",
+        usage: "bb advisor enable [thread-id]",
+      },
+      {
+        name: "disable",
+        summary: "Stop the advisor in one thread, whatever the global setting is",
+        usage: "bb advisor disable [thread-id]",
+      },
+      {
+        name: "follow",
+        summary: "Drop a thread's override so it follows the global setting again",
+        usage: "bb advisor follow [thread-id]",
+      },
     ],
     run(argv, cliContext) {
       const [command = "status", explicitThreadId] = argv;
       const threadId = explicitThreadId ?? cliContext.threadId;
+
+      if (command === "enable" || command === "disable" || command === "follow") {
+        if (!threadId) {
+          return {
+            exitCode: 1,
+            stderr: "Pass a thread id or run from a bb thread.",
+          };
+        }
+        writeThreadOverride(
+          threadId,
+          command === "follow" ? null : command === "enable",
+        );
+        publishThreadChanged(threadId);
+        return {
+          exitCode: 0,
+          stdout: `Thread ${threadId}: ${describeThreadToggle(threadId)}`,
+        };
+      }
+
       if (command === "status") {
         const target = threadId
-          ? `\nThread: ${threadId}\nReview lifecycle: ${reviewLifecycle(threadId)}`
+          ? `\nThread: ${threadId}\nThread advisor: ${describeThreadToggle(threadId)}\nReview lifecycle: ${reviewLifecycle(threadId)}`
           : "";
         const selections = db
           .prepare(
@@ -2495,7 +2760,7 @@ export default async function plugin(bb: BbPluginApi) {
                 .join(", ");
         return {
           exitCode: 0,
-          stdout: `Advisor: ${currentSettings.enabled ? "enabled" : "disabled"}\nAuto review: ${currentSettings.autoReview ? "enabled" : "disabled"}\nAuto continue: ${currentSettings.autoContinue ? "enabled" : "disabled"}\nMachine models: ${modelStatus}${target}`,
+          stdout: `Advisor default: ${currentSettings.enabled ? "enabled" : "disabled"}\nNew threads: ${describeNewThreadToggle()}\nAuto review: ${currentSettings.autoReview ? "enabled" : "disabled"}\nAuto continue: ${currentSettings.autoContinue ? "enabled" : "disabled"}\nMachine models: ${modelStatus}${target}`,
         };
       }
       if (command === "reviews") {
@@ -2530,7 +2795,8 @@ export default async function plugin(bb: BbPluginApi) {
       }
       return {
         exitCode: 1,
-        stderr: "Usage: bb advisor status [thread-id]\n       bb advisor reviews [thread-id]",
+        stderr:
+          "Usage: bb advisor status [thread-id]\n       bb advisor reviews [thread-id]\n       bb advisor enable|disable|follow [thread-id]",
       };
     },
   });

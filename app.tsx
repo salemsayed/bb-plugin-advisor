@@ -27,6 +27,7 @@ type Contract = typeof rpcContract;
 type BadgeData = PluginRpcResult<Contract["threadBadge"]>;
 type PanelData = PluginRpcResult<Contract["threadReviews"]>;
 type PendingAdviceData = PluginRpcResult<Contract["pendingAdvice"]>;
+type ToggleData = PluginRpcResult<Contract["threadToggle"]>;
 type PanelReview = PanelData["reviews"][number];
 type PanelIncident = PanelData["incidents"][number];
 type ReviewLifecycle = PanelData["lifecycle"];
@@ -437,6 +438,210 @@ function badgeStanding(
  * into the next turn's instructions, so without this banner the agent changes
  * course and the human is never told why.
  */
+/**
+ * The switch's state for whichever composer mounted it: a thread's own choice,
+ * or the default a newly created thread will inherit. Separate from
+ * `useThreadAdvisor` because the new-thread variant has no thread id to key a
+ * fetch or a realtime signal on, and because it is the one surface here whose
+ * value moves when the *global* setting changes.
+ */
+function useAdvisorToggle(threadId: string | null, forNewThread: boolean) {
+  const rpc = useRpc<Contract>();
+  const [data, setData] = useState<ToggleData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      if (forNewThread) {
+        setData(await rpc.call("newThreadToggle", null));
+      } else if (threadId !== null) {
+        setData(await rpc.call("threadToggle", { threadId }));
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [rpc, threadId, forNewThread]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useRealtime(
+    "thread-changed",
+    useCallback(
+      (payload: unknown) => {
+        if (threadId === null) return;
+        const target =
+          typeof payload === "object" && payload !== null
+            ? (payload as { threadId?: unknown }).threadId
+            : undefined;
+        if (target === threadId) void load();
+      },
+      [threadId, load],
+    ),
+  );
+
+  // A changed global setting, and the new-thread default, carry no thread id —
+  // so neither can arrive on the channel above, yet both move what this switch
+  // should be showing.
+  useRealtime(
+    "advisor-settings-changed",
+    useCallback(() => {
+      void load();
+    }, [load]),
+  );
+
+  // Signals are fire-and-forget, so anything published while the socket was
+  // down is gone. Reconcile on every transition back to `connected`.
+  const connection = useRealtimeConnectionState();
+  const [wasConnected, setWasConnected] = useState(connection === "connected");
+  useEffect(() => {
+    if (connection !== "connected") {
+      setWasConnected(false);
+      return;
+    }
+    if (wasConnected) return;
+    setWasConnected(true);
+    void load();
+  }, [connection, wasConnected, load]);
+
+  return { data, error, reload: load };
+}
+
+/**
+ * The advisor's switch, mounted in the composer's action row beside the harness
+ * controls. It is a `role="switch"` rather than a command button because it
+ * advertises a standing state — "does the advisor run here" — that has to stay
+ * readable without clicking it.
+ *
+ * In a composer that has no thread yet it arms the choice for the thread that
+ * composer is about to create — so the decision can be made before the first
+ * message rather than after the advisor has already reviewed a turn — and that
+ * thread spends it. It is not a second persistent default; the plugin's own
+ * "Enable advisor" setting is the only one of those.
+ */
+function AdvisorThreadToggle() {
+  const composer = useComposer();
+  const rpc = useRpc<Contract>();
+  const scope = composer.scope;
+  const threadId = scope.kind === "thread" ? scope.threadId : null;
+  const forNewThread = scope.kind === "new-thread";
+  const { data, error, reload } = useAdvisorToggle(threadId, forNewThread);
+  // Holds the requested value until the server confirms it, so the switch does
+  // not sit in its old position for a full round trip.
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
+
+  const state = data;
+
+  useEffect(() => {
+    // Any server-confirmed state supersedes the optimistic one, including a
+    // change made from another client or the CLI.
+    setPending(null);
+  }, [state?.enabled, state?.override]);
+
+  const toggle = useCallback(async () => {
+    if (state === null) return;
+    const next = !(pending ?? state.enabled);
+    setPending(next);
+    setWriteError(null);
+    try {
+      if (forNewThread) {
+        await rpc.call("setNewThreadToggle", { enabled: next });
+      } else if (threadId !== null) {
+        await rpc.call("setThreadToggle", { threadId, enabled: next });
+      }
+    } catch (caught) {
+      // Snapping back is the point: a switch left in the position the user
+      // asked for would claim the advisor is off while it still runs.
+      setPending(null);
+      setWriteError(caught instanceof Error ? caught.message : String(caught));
+    }
+    await reload();
+  }, [rpc, threadId, forNewThread, state, pending, reload]);
+
+  if (threadId === null && !forNewThread) return null;
+
+  const problem = writeError ?? error;
+  if (problem) {
+    return (
+      <button
+        type="button"
+        title={`Advisor switch unavailable (${problem}). Click to retry.`}
+        aria-label="Advisor switch unavailable, click to retry"
+        onClick={() => {
+          setWriteError(null);
+          void reload();
+        }}
+        className="inline-flex h-7 shrink-0 items-center rounded-md border border-dashed border-border px-1.5 text-subtle-foreground hover:bg-state-hover"
+      >
+        <SeverityGlyph standing="unavailable" className="size-3.5 shrink-0" />
+      </button>
+    );
+  }
+
+  // Nothing to show until the state is known: a switch that renders "off" while
+  // it loads would misreport a thread the advisor is actually running in.
+  if (state === null) return null;
+
+  const enabled = pending ?? state.enabled;
+  // The new-thread wording says "this thread" on purpose: the choice is spent
+  // by the thread this composer creates, so a plural label would promise a
+  // standing default the switch does not keep.
+  const hint = forNewThread
+    ? enabled
+      ? "Advisor on for this new thread"
+      : "Advisor off for this new thread"
+    : enabled
+      ? "Advisor on"
+      : "Advisor off";
+
+  return (
+    <span className="group relative inline-flex shrink-0">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label={hint}
+        onClick={() => void toggle()}
+        className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-1.5 hover:bg-state-hover ${
+          enabled
+            ? "border-border text-foreground"
+            : "border-dashed border-border text-subtle-foreground"
+        }`}
+      >
+        <SeverityGlyph standing="pass" className="size-3.5 shrink-0" />
+        {/* Track and knob are sized so both insets are 1px in either position:
+            the 28px track less its two 1px borders leaves 26px, and a 12px knob
+            offset by 1px travels exactly 12px. */}
+        <span
+          aria-hidden="true"
+          className={`relative h-4 w-7 shrink-0 rounded-full border transition-colors ${
+            enabled
+              ? "border-success bg-success"
+              : "border-border bg-surface-recessed"
+          }`}
+        >
+          <span
+            className={`absolute left-px top-px size-3 rounded-full bg-background transition-transform ${
+              enabled ? "translate-x-3" : "translate-x-0"
+            }`}
+          />
+        </span>
+      </button>
+      {/* Paint-only hover hint. `title` is deliberately absent here: the native
+          tooltip would arrive a second later and duplicate this one. */}
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-card px-2 py-1 text-2xs text-foreground opacity-0 shadow-md transition-opacity group-hover:opacity-100"
+      >
+        {hint}
+      </span>
+    </span>
+  );
+}
+
 function AdvisorComposerBanner() {
   const composer = useComposer();
   const navigate = useBbNavigate();
@@ -1301,5 +1506,14 @@ export default definePluginApp((app) => {
     id: "pending-advice",
     scopes: ["thread"],
     banners: [{ id: "pending-advice", chrome: "bare", component: AdvisorComposerBanner }],
+  });
+
+  // Registered separately from the banner: the switch belongs in the new-thread
+  // composer too, while a pending-advice banner there would have no thread to
+  // report on.
+  app.composer.customize({
+    id: "advisor-switch",
+    scopes: ["thread", "new-thread"],
+    actions: [{ id: "thread-toggle", component: AdvisorThreadToggle }],
   });
 });

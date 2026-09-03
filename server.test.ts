@@ -131,6 +131,257 @@ END_ADVISOR_RESULT`);
   });
 });
 
+describe("per-thread advisor switch", () => {
+  const PASS_OUTPUT = `ADVISOR_RESULT
+severity: pass
+summary: Looks correct
+details:
+none
+END_ADVISOR_RESULT`;
+
+  it("reports a thread with no choice of its own as following the default", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    expect(await harness.callRpc("threadToggle", { threadId: "thread-primary" }))
+      .toEqual({ enabled: true, override: null, globalEnabled: true });
+
+    await harness.setSettings({ enabled: false });
+
+    expect(await harness.callRpc("threadToggle", { threadId: "thread-primary" }))
+      .toEqual({ enabled: false, override: null, globalEnabled: false });
+  });
+
+  it("withholds the tool and instructions from a thread switched off", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    await harness.callRpc("setThreadToggle", {
+      threadId: "thread-primary",
+      enabled: false,
+    });
+
+    const gated = await harness.resolveAgentConfiguration(primaryContext);
+    expect(gated.tools).toEqual([]);
+    expect(gated.instructions).toBeNull();
+
+    // A sibling thread that never chose is untouched by the other's override.
+    const sibling = await harness.resolveAgentConfiguration({
+      ...primaryContext,
+      thread: { ...primaryContext.thread, id: "thread-other" },
+    });
+    expect(sibling.tools.map((tool) => tool.name)).toEqual(["advisor_review"]);
+  });
+
+  it("runs in a thread switched on while the global default is off", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+    await harness.setSettings({ enabled: false });
+
+    expect(
+      (await harness.resolveAgentConfiguration(primaryContext)).tools,
+    ).toEqual([]);
+
+    const state = await harness.callRpc("setThreadToggle", {
+      threadId: "thread-primary",
+      enabled: true,
+    });
+    expect(state).toEqual({
+      enabled: true,
+      override: true,
+      globalEnabled: false,
+    });
+
+    const opted = await harness.resolveAgentConfiguration(primaryContext);
+    expect(opted.tools.map((tool) => tool.name)).toEqual(["advisor_review"]);
+  });
+
+  it("returns a thread to the default when its override is cleared", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    await harness.callRpc("setThreadToggle", {
+      threadId: "thread-primary",
+      enabled: false,
+    });
+    await harness.callRpc("setThreadToggle", {
+      threadId: "thread-primary",
+      enabled: null,
+    });
+
+    expect(await harness.callRpc("threadToggle", { threadId: "thread-primary" }))
+      .toEqual({ enabled: true, override: null, globalEnabled: true });
+    expect(
+      (await harness.resolveAgentConfiguration(primaryContext)).tools.map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(["advisor_review"]);
+  });
+
+  it("hands the armed choice to the thread being created", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    await harness.callRpc("setNewThreadToggle", { enabled: false });
+    await harness.emitThreadEvent("thread.created", {
+      thread: makeThreadResponse({ id: "thread-fresh" }),
+    });
+
+    expect(await harness.callRpc("threadToggle", { threadId: "thread-fresh" }))
+      .toEqual({ enabled: false, override: false, globalEnabled: true });
+    expect(
+      (
+        await harness.resolveAgentConfiguration({
+          ...primaryContext,
+          thread: { ...primaryContext.thread, id: "thread-fresh" },
+        })
+      ).tools,
+    ).toEqual([]);
+  });
+
+  it("spends the armed choice on one thread and no more", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    await harness.callRpc("setNewThreadToggle", { enabled: false });
+    await harness.emitThreadEvent("thread.created", {
+      thread: makeThreadResponse({ id: "thread-first" }),
+    });
+    await harness.emitThreadEvent("thread.created", {
+      thread: makeThreadResponse({ id: "thread-second" }),
+    });
+
+    // The whole point of the single-use rule: a choice armed once must not keep
+    // answering for every thread created afterwards.
+    expect(await harness.callRpc("threadToggle", { threadId: "thread-first" }))
+      .toEqual({ enabled: false, override: false, globalEnabled: true });
+    expect(await harness.callRpc("threadToggle", { threadId: "thread-second" }))
+      .toEqual({ enabled: true, override: null, globalEnabled: true });
+    // And the composer's switch is back to reporting the setting.
+    expect(await harness.callRpc("newThreadToggle", null)).toEqual({
+      enabled: true,
+      override: null,
+      globalEnabled: true,
+    });
+  });
+
+  it("keeps the armed choice safe from other plugins' worker threads", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    await harness.callRpc("setNewThreadToggle", { enabled: false });
+    await harness.emitThreadEvent("thread.created", {
+      thread: makeThreadResponse({
+        id: "worker",
+        originPluginId: "workflows",
+        visibility: "hidden",
+      }),
+    });
+
+    // A worker thread appearing between arming and creating must not spend the
+    // choice the user aimed at their own next thread.
+    expect(await harness.callRpc("newThreadToggle", null)).toEqual({
+      enabled: false,
+      override: false,
+      globalEnabled: true,
+    });
+    expect(await harness.callRpc("threadToggle", { threadId: "worker" }))
+      .toEqual({ enabled: true, override: null, globalEnabled: true });
+  });
+
+  it("leaves threads that already existed on the setting", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    // thread-primary existed before the switch moved, so it must keep following
+    // the setting rather than adopt a choice armed for a later thread.
+    await harness.callRpc("setNewThreadToggle", { enabled: false });
+
+    expect(await harness.callRpc("threadToggle", { threadId: "thread-primary" }))
+      .toEqual({ enabled: true, override: null, globalEnabled: true });
+    expect(
+      (await harness.resolveAgentConfiguration(primaryContext)).tools.map(
+        (tool) => tool.name,
+      ),
+    ).toEqual(["advisor_review"]);
+  });
+
+  it("never hands the new-thread default to a plugin-owned reviewer", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    await harness.callRpc("setNewThreadToggle", { enabled: true });
+    await harness.emitThreadEvent("thread.created", {
+      thread: makeThreadResponse({
+        id: "thread-advisor",
+        originPluginId: "advisor",
+        visibility: "hidden",
+      }),
+    });
+
+    expect(await harness.callRpc("threadToggle", { threadId: "thread-advisor" }))
+      .toEqual({ enabled: true, override: null, globalEnabled: true });
+  });
+
+  it("reports the new-thread switch as following the global setting until armed", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+
+    expect(await harness.callRpc("newThreadToggle", null)).toEqual({
+      enabled: true,
+      override: null,
+      globalEnabled: true,
+    });
+
+    await harness.setSettings({ enabled: false });
+    expect(await harness.callRpc("newThreadToggle", null)).toEqual({
+      enabled: false,
+      override: null,
+      globalEnabled: false,
+    });
+
+    await harness.callRpc("setNewThreadToggle", { enabled: true });
+    expect(await harness.callRpc("newThreadToggle", null)).toEqual({
+      enabled: true,
+      override: true,
+      globalEnabled: false,
+    });
+  });
+
+  it("refuses the tool in a thread switched off after the session got it", async () => {
+    const { harness, spawn } = await loadAdvisor(PASS_OUTPUT);
+
+    // The tool set is handed to a provider session when it starts, so a thread
+    // switched off mid-session is still holding the tool from when it was on.
+    await harness.callRpc("setThreadToggle", {
+      threadId: "thread-primary",
+      enabled: false,
+    });
+    const answer = await harness.callAgentTool(
+      "advisor_review",
+      { focus: "" },
+      { threadId: "thread-primary", projectId: "project-test" },
+    );
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(answer).toContain("switched off for this thread");
+    // A refusal that reads as a clean bill of health would be worse than no
+    // gate at all.
+    expect(answer).toContain("not an approval");
+  });
+
+  it("skips the post-turn review of a thread switched off", async () => {
+    const { harness, spawn } = await loadAutoAdvisor(PASS_OUTPUT);
+
+    await harness.callRpc("setThreadToggle", {
+      threadId: "thread-primary",
+      enabled: false,
+    });
+    await harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({
+        id: "thread-primary",
+        projectId: "project-test",
+        environmentId: "environment-test",
+        providerId: "codex",
+        visibility: "visible",
+      }),
+      lastAssistantText: "Everything passes.",
+    });
+
+    expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
 describe("advisor storage migrations", () => {
   it("preserves legacy selections and sessions while adding reasoning state", async () => {
     const host = createFakePluginHost({ pluginId: "advisor" });
