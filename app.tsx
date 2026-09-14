@@ -8,12 +8,12 @@ import {
   useRpc,
   Markdown,
   ThreadChat,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import type {
   PluginRpcResult,
   PluginThreadHeaderActionProps,
   PluginThreadPanelProps,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import type { ModelConfiguration, rpcContract } from "./server";
 
 const PANEL_ACTION_ID = "reviews";

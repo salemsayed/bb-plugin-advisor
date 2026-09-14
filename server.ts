@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { defineRpcContract } from "@bb/plugin-sdk";
+import { defineRpcContract } from "@get-bb/plugin-sdk";
 import type {
   BbPluginApi,
   PluginAgentConfigurationContext,
-} from "@bb/plugin-sdk";
+} from "@get-bb/plugin-sdk";
 import {
   formatReview,
   formatTimelineRows,
@@ -21,15 +21,16 @@ const ADVISOR_TITLE_PREFIX = "Advisor · ";
 /**
  * Permission modes the reviewer will accept, least privileged first. The mode
  * is negotiated against what the provider actually advertises rather than
- * hardcoded, because bb only gained a real `readonly` mode recently: pinning
- * it would make every review report unavailable on a bb that predates it,
- * while pinning `accept-edits` would keep handing the reviewer workspace write
- * access forever on a bb that has something narrower. Picking the value out of
- * the provider's own `supportedPermissionModes` also keeps this typed on both
- * versions without a cast.
+ * hardcoded, so a provider that only offers something wider is reported as
+ * unable to host a reviewer instead of quietly getting one. bb briefly
+ * advertised a narrower `readonly` mode and removed it again, so `accept-edits`
+ * is currently the narrowest mode a reviewer can be spawned in. This stays a
+ * list so a narrower mode can be preferred again by prepending it here.
  */
-const ADVISOR_PERMISSION_MODE_PREFERENCE = ["readonly", "accept-edits"];
-const ADVISOR_PERMISSION_MODE_LABEL = "read-only (or accept-edits) mode";
+const ADVISOR_PERMISSION_MODE_PREFERENCE: readonly AdvisorPermissionMode[] = [
+  "accept-edits",
+];
+const ADVISOR_PERMISSION_MODE_LABEL = "accept-edits mode";
 /** The host's own permission-mode union, whichever bb version is running. */
 type AdvisorPermissionMode = NonNullable<
   Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]["permissionMode"]
@@ -991,7 +992,7 @@ export default async function plugin(bb: BbPluginApi) {
     const providers = (await bb.sdk.providers.list({ hostId })).filter(
       (provider) =>
         provider.available &&
-        narrowestReviewMode(provider.capabilities.supportedPermissionModes) !==
+        narrowestReviewMode(provider.capabilities.permissionModes) !==
           null,
     );
     const optionGroups = await Promise.all(
@@ -1585,9 +1586,11 @@ export default async function plugin(bb: BbPluginApi) {
       "Run an independent review-only model pass on this thread and return concrete issues before finalizing.",
     instructions:
       "For substantial coding work, call advisor_review exactly once after implementation and verification but before the final answer. Address concern/blocker feedback before completing.",
-    experimental_statusLabels: {
-      pending: "Consulting advisor",
-      completed: "Consulted advisor",
+    presentation: {
+      label: {
+        pending: "Consulting advisor",
+        completed: "Consulted advisor",
+      },
     },
     parameters: z.object({
       focus: z
@@ -1722,7 +1725,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (!provider) return "unknown";
       if (!provider.available) return "unsupported";
       const permissionMode = narrowestReviewMode(
-        provider.capabilities.supportedPermissionModes,
+        provider.capabilities.permissionModes,
       );
       return permissionMode === null
         ? "unsupported"
@@ -1784,7 +1787,7 @@ export default async function plugin(bb: BbPluginApi) {
       const permissionMode =
         selectedProvider?.available === true
           ? narrowestReviewMode(
-              selectedProvider.capabilities.supportedPermissionModes,
+              selectedProvider.capabilities.permissionModes,
             )
           : null;
       const selectedModel = catalog.models.find(

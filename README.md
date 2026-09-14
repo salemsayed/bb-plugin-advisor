@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/salemsayed/bb-plugin-advisor/actions/workflows/ci.yml/badge.svg)](https://github.com/salemsayed/bb-plugin-advisor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![bb ≥ 0.35](https://img.shields.io/badge/bb-%E2%89%A5%200.35-8b5cf6.svg)](#install)
+[![bb ≥ 0.40](https://img.shields.io/badge/bb-%E2%89%A5%200.40-8b5cf6.svg)](#install)
 
 <p align="center">
   <img src="./docs/media/advisor-hero.svg" alt="Advisor — an independent reviewer on every coding thread" width="100%" />
@@ -81,7 +81,7 @@ injected stale.
 
 ## Install
 
-Requires bb ≥ 0.35.
+Requires bb ≥ 0.40 and plugin SDK ≥ 0.4.21.
 
 From GitHub:
 
@@ -231,19 +231,21 @@ session is bound to the environment it was spawned into; if the primary thread
 moves, the reviewer is respawned rather than left inspecting the old checkout.
 
 The reviewer's permission mode is negotiated per review against what the
-provider actually advertises, narrowest first: `readonly` when bb offers it,
-otherwise `accept-edits`. Pinning either would be wrong — `readonly` reports
-every review as unavailable on a bb released before that mode existed, and
-`accept-edits` keeps handing the reviewer workspace write access on a bb that
-has something narrower. A session spawned under a wider mode is retired rather
-than reused once a narrower one becomes available, so upgrading bb tightens
-the reviewer without any action.
+provider actually advertises, narrowest first. bb briefly offered a `readonly`
+mode and removed it again, so on current bb the narrowest mode a reviewer can
+be spawned in is `accept-edits`, and a provider that offers nothing narrower
+than `auto` is reported as unable to host a reviewer. The preference stays a
+list rather than a pinned value: once an SDK publishes a narrower mode, adding
+it to `ADVISOR_PERMISSION_MODE_PREFERENCE` in `server.ts` is the whole change.
+
+A session spawned under a mode that is no longer the negotiated one is retired
+rather than reused — including a session left over from a bb that still had
+`readonly` — so the reviewer never stays pinned to a mode the host can no
+longer validate.
 
 When the provider catalog cannot be read, the mode is probed narrowest-first
-rather than assumed: the reviewer asks for `readonly`, and only a refusal
-moves it to `accept-edits`. A mode the host accepted before is tried first, so
-the probe costs nothing on the common path. A transient outage therefore
-neither disables reviews nor silently widens them.
+rather than assumed, and a mode the host accepted before is tried first. A
+transient outage therefore neither disables reviews nor silently widens them.
 
 ## Inspect
 
@@ -261,13 +263,14 @@ bb plugin logs advisor -f
 > database, and thread orchestration. Read the source before installing —
 > this repository is small on purpose.
 
-The reviewer itself is constrained by the negotiated permission mode, with one
-caveat: bb only gained a first-class `readonly` mode recently, so on an older
-build the reviewer is a behavioural boundary rather than an enforced one — it
-is instructed to use read-only operations and runs in the narrowest mode
-available, but it is not sandboxed. The exact tool set exposed in a given mode
-remains the provider's responsibility, so provider-specific non-workspace
-capabilities must still be assessed by that provider.
+The reviewer itself is constrained by the negotiated permission mode, with an
+important caveat: current bb has no read-only permission mode, so the reviewer
+runs in `accept-edits` and **can write to the workspace**. Read-only review is
+a behavioural boundary here, not an enforced one — the reviewer is instructed
+to use read-only operations and runs in the narrowest mode available, but it is
+not sandboxed. The exact tool set exposed in a given mode remains the
+provider's responsibility, so provider-specific non-workspace capabilities must
+still be assessed by that provider.
 
 ## Development
 

@@ -13779,7 +13779,7 @@ function date4(params) {
 config(en_default());
 
 // server.ts
-import { defineRpcContract } from "@bb/plugin-sdk";
+import { defineRpcContract } from "@get-bb/plugin-sdk";
 
 // src/review.ts
 var SEVERITY_RANK = {
@@ -13859,8 +13859,10 @@ function formatTimelineRows(rows, maxCharacters) {
 var PLUGIN_ID = "advisor";
 var ADVISOR_TOOL = "advisor_review";
 var ADVISOR_TITLE_PREFIX = "Advisor \xB7 ";
-var ADVISOR_PERMISSION_MODE_PREFERENCE = ["readonly", "accept-edits"];
-var ADVISOR_PERMISSION_MODE_LABEL = "read-only (or accept-edits) mode";
+var ADVISOR_PERMISSION_MODE_PREFERENCE = [
+  "accept-edits"
+];
+var ADVISOR_PERMISSION_MODE_LABEL = "accept-edits mode";
 var PENDING_ADVICE_MAX_AGE_MS = 24 * 60 * 60 * 1e3;
 var CANCELLED_REASON = "the primary turn was cancelled before the review finished";
 var MIN_CHAINABLE_ADVICE_LENGTH = 40;
@@ -14564,7 +14566,7 @@ async function plugin(bb) {
   }
   async function listHostModelOptions(hostId) {
     const providers = (await bb.sdk.providers.list({ hostId })).filter(
-      (provider) => provider.available && narrowestReviewMode(provider.capabilities.supportedPermissionModes) !== null
+      (provider) => provider.available && narrowestReviewMode(provider.capabilities.permissionModes) !== null
     );
     const optionGroups = await Promise.all(
       providers.map(async (provider) => {
@@ -15031,9 +15033,11 @@ Address this now. Inspect the current state, make the correction, verify it, the
     name: ADVISOR_TOOL,
     description: "Run an independent review-only model pass on this thread and return concrete issues before finalizing.",
     instructions: "For substantial coding work, call advisor_review exactly once after implementation and verification but before the final answer. Address concern/blocker feedback before completing.",
-    experimental_statusLabels: {
-      pending: "Consulting advisor",
-      completed: "Consulted advisor"
+    presentation: {
+      label: {
+        pending: "Consulting advisor",
+        completed: "Consulted advisor"
+      }
     },
     parameters: external_exports.object({
       focus: external_exports.string().max(4e3).default("").describe("What changed, what was verified, and any uncertainty the advisor should examine")
@@ -15132,7 +15136,7 @@ Address every finding above before proceeding.` : "";
       if (!provider) return "unknown";
       if (!provider.available) return "unsupported";
       const permissionMode = narrowestReviewMode(
-        provider.capabilities.supportedPermissionModes
+        provider.capabilities.permissionModes
       );
       return permissionMode === null ? "unsupported" : { kind: "supported", permissionMode };
     } catch (error48) {
@@ -15178,7 +15182,7 @@ Address every finding above before proceeding.` : "";
         (provider) => provider.id === selection.providerId
       );
       const permissionMode = selectedProvider?.available === true ? narrowestReviewMode(
-        selectedProvider.capabilities.supportedPermissionModes
+        selectedProvider.capabilities.permissionModes
       ) : null;
       const selectedModel = catalog.models.find(
         (model) => model.model === selection.model

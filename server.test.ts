@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
   makeThreadResponse,
-} from "@bb/plugin-sdk/testing";
-import type { PluginAgentConfigurationContext } from "@bb/plugin-sdk";
+} from "@get-bb/plugin-sdk/testing";
+import type { PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import plugin, { parseRuntimeSettings } from "./server.js";
 
 const primaryContext = {
@@ -27,7 +27,11 @@ const primaryContext = {
     branchName: null,
   },
   host: { id: "host-test", name: "Test host" },
-  provider: { id: "codex", model: "gpt-5.6" },
+  provider: {
+    id: "codex",
+    model: "gpt-5.6",
+    capabilities: { supportsNativeUserQuestion: false },
+  },
   origin: { kind: null, pluginId: null },
 } satisfies PluginAgentConfigurationContext;
 
@@ -79,7 +83,7 @@ async function loadAdvisor(
           model: "gpt-5.6",
           serviceTier: "none",
           reasoningLevel: "high",
-          permissionMode: "readonly",
+          permissionMode: "accept-edits",
           source: "client/turn/start",
         }),
       },
@@ -408,10 +412,10 @@ END_ADVISOR_RESULT`);
           id: "codex",
           displayName: "Codex",
           available: true,
-          // Both acceptable modes on offer: the reviewer must take the
-          // narrower one.
+          // Wider modes are also on offer: the reviewer must take the
+          // narrowest one it accepts.
           capabilities: {
-            supportedPermissionModes: ["readonly", "accept-edits", "full"],
+            permissionModes: ["accept-edits", "auto", "full"],
           },
         },
       ],
@@ -432,7 +436,7 @@ END_ADVISOR_RESULT`);
         projectId: "project-test",
         providerId: "codex",
         model: "gpt-5.6",
-        permissionMode: "readonly",
+        permissionMode: "accept-edits",
         environment: { type: "reuse", environmentId: "environment-test" },
         visibility: "hidden",
       }),
@@ -882,9 +886,9 @@ describe("repeated advice", () => {
 });
 
 describe("advisor session environment binding", () => {
-  it("falls back to accept-edits on a bb without a read-only mode", async () => {
-    // The mode is negotiated, not pinned: pinning read-only would report every
-    // review unavailable on a bb that predates it.
+  it("spawns the reviewer in the narrowest mode the provider offers", async () => {
+    // The mode is negotiated against the advertised list, not pinned, so a bb
+    // that reintroduces a narrower mode is picked up without a code change.
     const { harness, spawn } = await loadAdvisor(BLOCKER_OUTPUT);
     harness.sdk.stub("providers.models", async () => ({
       providers: [
@@ -893,7 +897,7 @@ describe("advisor session environment binding", () => {
           displayName: "Codex",
           available: true,
           capabilities: {
-            supportedPermissionModes: ["accept-edits", "auto", "full"],
+            permissionModes: ["accept-edits", "auto", "full"],
           },
         },
       ],
@@ -903,7 +907,7 @@ describe("advisor session environment binding", () => {
 
     await harness.callAgentTool(
       "advisor_review",
-      { focus: "Review on a bb without read-only." },
+      { focus: "Review with several modes on offer." },
       { threadId: "thread-primary" },
     );
 
@@ -912,46 +916,89 @@ describe("advisor session environment binding", () => {
     );
   });
 
-  it("respawns the reviewer once a narrower mode becomes available", async () => {
-    // Reusing the old session after a bb upgrade would quietly keep the
-    // reviewer's workspace write access.
-    let modes = ["accept-edits", "auto", "full"];
-    const { harness, spawn, setTimelineSeq } = await loadAdvisor(BLOCKER_OUTPUT);
-    harness.sdk.stub("providers.models", async () => ({
-      providers: [
-        {
-          id: "codex",
-          displayName: "Codex",
-          available: true,
-          capabilities: { supportedPermissionModes: modes },
-        },
-      ],
-      models: [],
-      modelLoadError: null,
-    }));
+  /**
+   * Seeds a session row that matches the primary thread on every reuse key
+   * except `permission_mode`, so a test can attribute reuse or respawn to that
+   * column alone.
+   */
+  function seedSession(
+    bb: { storage: { database(): { prepare(sql: string): { run(...args: unknown[]): unknown } } } },
+    permissionMode: string,
+  ) {
+    const now = Date.now();
+    bb.storage
+      .database()
+      .prepare(
+        `INSERT INTO advisor_sessions (
+           primary_thread_id, advisor_thread_id, provider_id, model,
+           reasoning_level, environment_id, permission_mode, created_at,
+           updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "thread-primary",
+        "thread-advisor",
+        "codex",
+        "gpt-5.6",
+        "default",
+        "environment-test",
+        permissionMode,
+        now,
+        now,
+      );
+  }
+
+  const NEGOTIABLE_CATALOG = {
+    providers: [
+      {
+        id: "codex",
+        displayName: "Codex",
+        available: true,
+        capabilities: { permissionModes: ["accept-edits", "auto", "full"] },
+      },
+    ],
+    models: [],
+    modelLoadError: null,
+  };
+
+  it("reuses a stored session that already runs in the negotiated mode", async () => {
+    // The control for the respawn test below: with every reuse key matching,
+    // the stored session is kept and no reviewer is spawned.
+    const { bb, harness, spawn } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("providers.models", async () => NEGOTIABLE_CATALOG);
+    seedSession(bb, "accept-edits");
 
     await harness.callAgentTool(
       "advisor_review",
-      { focus: "Before the upgrade." },
+      { focus: "Review with a reusable session." },
       { threadId: "thread-primary" },
     );
+
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("respawns a reviewer stored under a mode this bb no longer negotiates", async () => {
+    // Every install that ran a pre-0.40 build has a session row stored under
+    // the removed `readonly` mode. Reusing it would keep the reviewer pinned to
+    // a mode the host can no longer validate, so it must be respawned. Only
+    // `permission_mode` differs from the reused row above.
+    const { bb, harness, spawn } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("providers.models", async () => NEGOTIABLE_CATALOG);
+    seedSession(bb, "readonly");
+
+    await harness.callAgentTool(
+      "advisor_review",
+      { focus: "First review after the upgrade." },
+      { threadId: "thread-primary" },
+    );
+
     expect(spawn).toHaveBeenCalledTimes(1);
-
-    modes = ["readonly", "accept-edits", "auto", "full"];
-    setTimelineSeq(43);
-    await harness.callAgentTool(
-      "advisor_review",
-      { focus: "After the upgrade." },
-      { threadId: "thread-primary" },
-    );
-
-    expect(spawn).toHaveBeenCalledTimes(2);
     expect(spawn).toHaveBeenLastCalledWith(
-      expect.objectContaining({ permissionMode: "readonly" }),
+      expect.objectContaining({ permissionMode: "accept-edits" }),
     );
   });
 
-  it("probes narrowest-first when the catalog cannot be read", async () => {
+  it("still spawns a reviewer when the catalog cannot be read", async () => {
     // A transient catalog outage must not disable reviews, and must not
     // silently hand the reviewer a wider mode than the host would have.
     const attempted: string[] = [];
@@ -961,9 +1008,6 @@ describe("advisor session environment binding", () => {
     });
     harness.sdk.stub("threads.spawn", async (args: { permissionMode: string }) => {
       attempted.push(args.permissionMode);
-      if (args.permissionMode === "readonly") {
-        throw new Error("unsupported permission mode");
-      }
       return makeThreadResponse({
         id: "thread-advisor",
         projectId: "project-test",
@@ -981,8 +1025,9 @@ describe("advisor session environment binding", () => {
       { threadId: "thread-primary" },
     );
 
-    // Read-only was asked for first and only refused, never assumed away.
-    expect(attempted).toEqual(["readonly", "accept-edits"]);
+    // The whole preference list is probed narrowest-first; no wider mode is
+    // assumed on the plugin's own initiative.
+    expect(attempted).toEqual(["accept-edits"]);
   });
 
   it("respawns the reviewer when the primary thread changes environment", async () => {
@@ -1024,7 +1069,7 @@ describe("advisor unavailability", () => {
           id: "codex",
           displayName: "Codex",
           available: true,
-          capabilities: { supportedPermissionModes: ["full"] },
+          capabilities: { permissionModes: ["full"] },
         },
       ],
       models: [],
@@ -1039,7 +1084,7 @@ describe("advisor unavailability", () => {
 
     expect(result).toContain("Advisor unavailable");
     expect(result).toContain("cannot host a reviewer");
-    expect(result).toContain("read-only");
+    expect(result).toContain("accept-edits mode");
     expect(result).toContain("NOT an approval");
     expect(spawn).not.toHaveBeenCalled();
   });
@@ -2139,7 +2184,7 @@ END_ADVISOR_RESULT`);
         id: "codex",
         displayName: "Codex",
         available: true,
-        capabilities: { supportedPermissionModes: ["readonly"] },
+        capabilities: { permissionModes: ["accept-edits"] },
       },
     ]);
     harness.sdk.stub("providers.models", async () => ({
@@ -2148,7 +2193,7 @@ END_ADVISOR_RESULT`);
           id: "codex",
           displayName: "Codex",
           available: true,
-          capabilities: { supportedPermissionModes: ["readonly"] },
+          capabilities: { permissionModes: ["accept-edits"] },
         },
       ],
       models: [
@@ -2184,6 +2229,7 @@ END_ADVISOR_RESULT`);
           hostName: "Laptop",
           connected: true,
           selection: null,
+          error: null,
           options: [
             {
               providerId: "codex",
@@ -2266,6 +2312,64 @@ END_ADVISOR_RESULT`);
     );
   });
 
+  it("reads the provider capability field this bb actually publishes", async () => {
+    // BM-9: the plugin read the pre-0.40 `supportedPermissionModes`. That field
+    // is absent on bb 0.40, so the filter called `.find` on undefined and every
+    // connected machine reported "Could not load models: TypeError ...".
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("hosts.list", async () => [
+      { id: "host-test", name: "Laptop", status: "connected" },
+    ]);
+    harness.sdk.stub("providers.list", async () => [
+      {
+        id: "codex",
+        displayName: "Codex",
+        available: true,
+        // Exactly what bb 0.40 publishes: `permissionModes`, and no
+        // `supportedPermissionModes` key at all.
+        capabilities: { permissionModes: ["accept-edits", "auto", "full"] },
+      },
+    ]);
+    harness.sdk.stub("providers.models", async () => ({
+      providers: [],
+      models: [
+        {
+          model: "gpt-advisor",
+          displayName: "GPT Advisor",
+          isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+          defaultReasoningEffort: "high",
+        },
+      ],
+      modelLoadError: null,
+    }));
+
+    const configuration = await harness.callRpc("modelConfiguration", null);
+
+    expect(configuration).toEqual({
+      hosts: [
+        {
+          hostId: "host-test",
+          hostName: "Laptop",
+          connected: true,
+          selection: null,
+          error: null,
+          options: [
+            {
+              providerId: "codex",
+              providerName: "Codex",
+              model: "gpt-advisor",
+              modelName: "GPT Advisor",
+              isDefault: true,
+              supportedReasoningLevels: ["high"],
+              defaultReasoningLevel: "high",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it("excludes incompatible providers and unverified fallback catalogs", async () => {
     const { harness } = await loadAdvisor(`ADVISOR_RESULT
 severity: pass
@@ -2281,13 +2385,13 @@ END_ADVISOR_RESULT`);
         id: "codex",
         displayName: "Codex",
         available: true,
-        capabilities: { supportedPermissionModes: ["readonly"] },
+        capabilities: { permissionModes: ["accept-edits"] },
       },
       {
         id: "pi",
         displayName: "Pi",
         available: true,
-        capabilities: { supportedPermissionModes: ["full"] },
+        capabilities: { permissionModes: ["full"] },
       },
     ]);
     harness.sdk.stub("providers.models", async () => ({
@@ -2296,7 +2400,7 @@ END_ADVISOR_RESULT`);
           id: "codex",
           displayName: "Codex",
           available: true,
-          capabilities: { supportedPermissionModes: ["readonly"] },
+          capabilities: { permissionModes: ["accept-edits"] },
         },
       ],
       models: [
@@ -2346,7 +2450,7 @@ END_ADVISOR_RESULT`);
         id: "codex",
         displayName: "Codex",
         available: true,
-        capabilities: { supportedPermissionModes: ["readonly"] },
+        capabilities: { permissionModes: ["accept-edits"] },
       },
     ]);
     harness.sdk.stub("providers.models", async () => ({
@@ -2355,7 +2459,7 @@ END_ADVISOR_RESULT`);
           id: "codex",
           displayName: "Codex",
           available: true,
-          capabilities: { supportedPermissionModes: ["readonly"] },
+          capabilities: { permissionModes: ["accept-edits"] },
         },
       ],
       models: [
@@ -2393,5 +2497,32 @@ END_ADVISOR_RESULT`);
     expect(harness.sdk.callsTo("threads.spawn")[0]?.[0]).not.toHaveProperty(
       "reasoningLevel",
     );
+  });
+});
+
+describe("advisor_review registration", () => {
+  it("declares its row labels under presentation.label, not experimental_statusLabels", async () => {
+    const { bb } = createFakePluginHost({ pluginId: "advisor" });
+    const registrations: Record<string, unknown>[] = [];
+    const registerTool = bb.agents.registerTool.bind(bb.agents);
+    bb.agents.registerTool = ((tool: Record<string, unknown>) => {
+      registrations.push(tool);
+      return (registerTool as (raw: unknown) => void)(tool);
+    }) as unknown as typeof bb.agents.registerTool;
+
+    await plugin(bb);
+
+    const tool = registrations.find(
+      (registered) => registered.name === "advisor_review",
+    );
+
+    expect(tool).toBeDefined();
+    expect(tool).not.toHaveProperty("experimental_statusLabels");
+    expect(tool?.presentation).toEqual({
+      label: {
+        pending: "Consulting advisor",
+        completed: "Consulted advisor",
+      },
+    });
   });
 });
