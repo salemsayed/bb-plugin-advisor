@@ -1405,9 +1405,8 @@ function AdvisorModelSettings() {
             ) : null}
             {host.selection && (selectedIndex < 0 || !reasoningAvailable) ? (
               <p className="mt-2 text-xs text-destructive">
-                Saved configuration {host.selection.providerId}/
-                {host.selection.model}@{host.selection.reasoningLevel}
-                could not be verified against the loaded models. Refresh models
+                Could not verify saved configuration {host.selection.providerId}/
+                {host.selection.model}@{host.selection.reasoningLevel}. Refresh models
                 to retry; reviews may fall back to the primary model.
               </p>
             ) : null}
