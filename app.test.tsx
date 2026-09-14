@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 
@@ -84,10 +84,6 @@ const toggleSlot = switchCustomization.actions![0]!;
 const threadComposer = {
   scope: { kind: "thread", threadId: "t1" } as const,
 };
-const newThreadComposer = {
-  scope: { kind: "new-thread", projectId: "p1" } as const,
-};
-
 describe("advisor thread switch", () => {
   it("reports the effective state of a thread that follows the default", async () => {
     const slot = renderSlot(toggleSlot, {}, {
@@ -184,47 +180,6 @@ describe("advisor thread switch", () => {
     expect(q(slot).getByRole("switch").getAttribute("title")).toBeNull();
   });
 
-  it("arms the choice for the thread a composer without one will create", async () => {
-    let stored: boolean | null = null;
-    const slot = renderSlot(toggleSlot, {}, {
-      composer: newThreadComposer,
-      rpc: {
-        newThreadToggle: () => ({
-          enabled: stored ?? true,
-          override: stored,
-          globalEnabled: true,
-        }),
-        setNewThreadToggle: (input) => {
-          stored = input.enabled;
-          return {
-            enabled: input.enabled ?? true,
-            override: input.enabled,
-            globalEnabled: true,
-          };
-        },
-      },
-    });
-
-    // Singular on purpose: a plural label would promise a standing default,
-    // and the choice is spent by the one thread this composer creates.
-    expect((await q(slot).findByRole("tooltip")).textContent).toBe(
-      "Advisor on for this new thread",
-    );
-
-    fireEvent.click(q(slot).getByRole("switch"));
-
-    await waitFor(() =>
-      expect(q(slot).getByRole("switch").getAttribute("aria-checked")).toBe(
-        "false",
-      ),
-    );
-    // Never the per-thread method: there is no thread to attach a choice to.
-    expect(slot.inspection.rpcCalls.map((call) => call.method)).not.toContain(
-      "setThreadToggle",
-    );
-    expect(stored).toBe(false);
-  });
-
   it("renders nothing in a composer scope it has no answer for", async () => {
     const slot = renderSlot(toggleSlot, {}, {
       composer: {
@@ -247,6 +202,52 @@ describe("advisor thread switch", () => {
 
     await waitFor(() => expect(slot.container.firstChild).toBeNull());
     expect(slot.inspection.rpcCalls).toEqual([]);
+  });
+
+  it("does not offer the switch in a new-thread composer", async () => {
+    expect(switchCustomization.scopes).toEqual(["thread"]);
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: { scope: { kind: "new-thread", projectId: "p1" } },
+    });
+    expect(slot.container.firstChild).toBeNull();
+    expect(slot.inspection.rpcCalls).toEqual([]);
+  });
+
+  it("ignores another click until the server confirms a toggle", async () => {
+    let enabled = true;
+    let finish: (() => void) | undefined;
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: threadComposer,
+      rpc: {
+        threadToggle: () => ({ enabled, override: enabled, globalEnabled: true }),
+        setThreadToggle: async (input) => {
+          await new Promise<void>((resolve) => { finish = resolve; });
+          enabled = input.enabled;
+          return { enabled, override: enabled, globalEnabled: true };
+        },
+      },
+    });
+    const control = await q(slot).findByRole("switch") as HTMLButtonElement;
+    fireEvent.click(control);
+    expect(control.disabled).toBe(true);
+    fireEvent.click(control);
+    expect(slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle"))
+      .toHaveLength(1);
+    await act(async () => { finish!(); });
+    await waitFor(() => expect(control.disabled).toBe(false));
+    expect(control.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("reloads a following thread when the global default changes", async () => {
+    let enabled = true;
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: threadComposer,
+      rpc: { threadToggle: () => ({ enabled, override: null, globalEnabled: enabled }) },
+    });
+    expect((await q(slot).findByRole("switch")).getAttribute("aria-checked")).toBe("true");
+    enabled = false;
+    await slot.behavior.emitRealtime("advisor-settings-changed", {});
+    await waitFor(() => expect(q(slot).getByRole("switch").getAttribute("aria-checked")).toBe("false"));
   });
 });
 
