@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 
 const app = await loadPluginApp(() => import("./app"));
@@ -115,10 +116,10 @@ describe("advisor thread switch", () => {
           globalEnabled: true,
         }),
         setThreadToggle: (input) => {
-          stored = { enabled: input.enabled };
+          stored = z.object({ enabled: z.boolean().nullable() }).parse(input);
           return {
-            enabled: input.enabled ?? true,
-            override: input.enabled,
+            enabled: stored.enabled ?? true,
+            override: stored.enabled,
             globalEnabled: true,
           };
         },
@@ -222,7 +223,7 @@ describe("advisor thread switch", () => {
         threadToggle: () => ({ enabled, override: enabled, globalEnabled: true }),
         setThreadToggle: async (input) => {
           await new Promise<void>((resolve) => { finish = resolve; });
-          enabled = input.enabled;
+          enabled = z.object({ enabled: z.boolean() }).parse(input).enabled;
           return { enabled, override: enabled, globalEnabled: true };
         },
       },

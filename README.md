@@ -297,7 +297,8 @@ still be assessed by that provider.
 
 ## Development
 
-Requires Node 22.
+Requires Node 22.19 or later in the Node 22 series. The build uses the locked
+BB 0.43.1 builder and SDK 0.4.87, independently of the desktop BB version.
 
 ```sh
 npm ci
@@ -307,6 +308,13 @@ npm pack --dry-run
 
 The GitHub Actions workflow runs the same typecheck, test, build, and package
 checks on pushes to `main` and on pull requests.
+
+Every build checks the SDK and runtime shim dependency pins with
+`bb plugin types --check`, then verifies the generated bundles' builder and
+SDK versions. It also rejects obsolete `types/` and `vendor/` directories.
+When updating the toolchain, update `bb-app`, run that version's
+`bb plugin types` to sync the SDK and shim declarations, then refresh
+`package-lock.json` with `npm install` and run the checks above.
 
 ## Credits
 
