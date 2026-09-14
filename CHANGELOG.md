@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+- Bound model discovery calls to five seconds and keep healthy provider results when another provider fails or stalls.
+- Show provider-specific discovery errors and a Refresh models action instead of leaving settings loading indefinitely.
+- Validate only the selected provider when saving; retain the visible saved selection without reloading every catalog.
+
 ## 0.1.1
 
 - Restore plugin loading and model discovery on BB 0.40 and later using the current tool presentation and provider permission APIs.

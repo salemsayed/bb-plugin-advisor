@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { withTimeout } from "./src/async.js";
 import {
   definePluginApp,
   useBbNavigate,
@@ -1227,35 +1228,63 @@ function AdvisorModelSettings() {
     useState<ModelConfiguration | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savingHostId, setSavingHostId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const loadController = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    loadController.current?.abort();
+    const controller = new AbortController();
+    loadController.current = controller;
+    setLoading(true);
+    setError(null);
     try {
-      setError(null);
-      setConfiguration(await rpc.call("modelConfiguration", null));
+      const result = await withTimeout(
+        () => rpc.call("modelConfiguration", null),
+        20_000,
+        "Loading machine models timed out. Try refreshing the models.",
+        controller.signal,
+      );
+      if (!controller.signal.aborted) setConfiguration(result);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      if (!controller.signal.aborted) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+      }
+    } finally {
+      if (!controller.signal.aborted) setLoading(false);
     }
   }, [rpc]);
 
   useEffect(() => {
     void load();
+    return () => loadController.current?.abort();
   }, [load]);
 
-  if (error) {
-    return <p className="text-sm text-destructive">{error}</p>;
-  }
-  if (!configuration) {
+  const refresh = (
+    <button
+      type="button"
+      className="rounded-md border border-input px-3 py-1.5 text-sm disabled:opacity-50"
+      disabled={loading || savingHostId !== null}
+      onClick={() => void load()}
+    >
+      {loading ? "Refreshing models…" : "Refresh models"}
+    </button>
+  );
+  if (!configuration && loading) {
     return <p className="text-sm text-muted-foreground">Loading machine models…</p>;
   }
 
   return (
     <div className="space-y-4">
+      {error ? (
+        <p role="alert" className="text-sm text-destructive">{error}</p>
+      ) : null}
+      {refresh}
       <p className="text-sm text-muted-foreground">
         Each review runs on the primary thread&apos;s machine. Choose an advisor
         model and reasoning level independently for each machine; machines
         without a selection follow the primary thread&apos;s provider and model.
       </p>
-      {configuration.hosts.map((host) => {
+      {configuration?.hosts.map((host) => {
         const selectedIndex = host.selection
           ? host.options.findIndex(
               (option) =>
@@ -1271,14 +1300,24 @@ function AdvisorModelSettings() {
           selectedOption?.supportedReasoningLevels.includes(
             host.selection.reasoningLevel,
           ) === true;
-        const value = selectedIndex >= 0 ? String(selectedIndex) : "follow";
+        const value = selectedIndex >= 0
+          ? String(selectedIndex)
+          : host.selection ? "unavailable" : "follow";
         const saveSelection = (
           selection: (typeof host)["selection"],
         ) => {
+          setError(null);
           setSavingHostId(host.hostId);
-          void rpc
-            .call("setHostModel", { hostId: host.hostId, selection })
-            .then(load)
+          void withTimeout(
+            () => rpc.call("setHostModel", { hostId: host.hostId, selection }),
+            15_000,
+            "Saving the model timed out. Refresh models to check the saved selection.",
+          )
+            .then(() => setConfiguration((current) => current ? {
+              hosts: current.hosts.map((row) =>
+                row.hostId === host.hostId ? { ...row, selection } : row,
+              ),
+            } : current))
             .catch((caught) => {
               setError(caught instanceof Error ? caught.message : String(caught));
             })
@@ -1302,7 +1341,7 @@ function AdvisorModelSettings() {
             <select
               aria-label={`Advisor model for ${host.hostName}`}
               className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!host.connected || savingHostId !== null}
+              disabled={!host.connected || savingHostId !== null || loading}
               value={value}
               onChange={(event) => {
                 const next = event.currentTarget.value;
@@ -1323,6 +1362,11 @@ function AdvisorModelSettings() {
               }}
             >
               <option value="follow">Follow primary thread</option>
+              {host.selection && selectedIndex < 0 ? (
+                <option value="unavailable" disabled>
+                  Saved: {host.selection.providerId} · {host.selection.model} (not loaded)
+                </option>
+              ) : null}
               {host.options.map((option, index) => (
                 <option
                   key={`${option.providerId}:${option.model}`}
@@ -1337,7 +1381,7 @@ function AdvisorModelSettings() {
               <select
                 aria-label={`Advisor reasoning for ${host.hostName}`}
                 className="mt-2 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={!host.connected || savingHostId !== null}
+                disabled={!host.connected || savingHostId !== null || loading}
                 value={host.selection.reasoningLevel}
                 onChange={(event) =>
                   saveSelection({
@@ -1362,8 +1406,9 @@ function AdvisorModelSettings() {
             {host.selection && (selectedIndex < 0 || !reasoningAvailable) ? (
               <p className="mt-2 text-xs text-destructive">
                 Saved configuration {host.selection.providerId}/
-                {host.selection.model}@{host.selection.reasoningLevel} is
-                unavailable. Reviews currently follow the primary model.
+                {host.selection.model}@{host.selection.reasoningLevel}
+                could not be verified against the loaded models. Refresh models
+                to retry; reviews may fall back to the primary model.
               </p>
             ) : null}
             {host.error ? (
@@ -1372,7 +1417,7 @@ function AdvisorModelSettings() {
           </div>
         );
       })}
-      {configuration.hosts.length === 0 ? (
+      {configuration?.hosts.length === 0 ? (
         <p className="text-sm text-muted-foreground">No enrolled machines found.</p>
       ) : null}
     </div>

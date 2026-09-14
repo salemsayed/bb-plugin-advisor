@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 
@@ -485,6 +485,49 @@ describe("advisor panel", () => {
 });
 
 describe("advisor model settings", () => {
+  it("replaces a hung request with a retry and ignores its late response", async () => {
+    vi.useFakeTimers();
+    let finishFirst: (value: unknown) => void = () => {};
+    let requests = 0;
+    const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: {
+      modelConfiguration: () => ++requests === 1
+        ? new Promise((resolve) => { finishFirst = resolve; })
+        : { hosts: [] },
+    } });
+    try {
+      expect(q(slot).getByText("Loading machine models…")).toBeTruthy();
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(q(slot).queryByText("Loading machine models…")).toBeNull();
+      expect(q(slot).getByRole("alert").textContent).toContain("timed out");
+      await act(async () => { fireEvent.click(q(slot).getByRole("button", { name: "Refresh models" })); });
+      expect(q(slot).getByText("No enrolled machines found.")).toBeTruthy();
+      await act(async () => { finishFirst({ hosts: [{ hostId: "late", hostName: "Stale machine", connected: false,
+        selection: null, options: [], error: null }] }); });
+      expect(q(slot).queryByText("Stale machine")).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { slot.lifecycle.unmount(); vi.useRealTimers(); }
+  });
+
+  it("shows partial discovery errors without disguising a saved model as follow-primary", async () => {
+    const slot = renderSlot(app.settingsSections[0]!, {}, { rpc: {
+      modelConfiguration: () => ({ hosts: [{
+        hostId: "host-laptop", hostName: "Laptop", connected: true,
+        selection: { providerId: "stuck", model: "saved-model", reasoningLevel: "default" },
+        options: [{ providerId: "codex", providerName: "Codex", model: "gpt-advisor",
+          modelName: "GPT Advisor", isDefault: false, supportedReasoningLevels: ["medium"],
+          defaultReasoningLevel: "medium" }],
+        error: "stuck: Model discovery timed out after 5 seconds.",
+      }] }),
+    } });
+    const select = await q(slot).findByLabelText("Advisor model for Laptop") as HTMLSelectElement;
+    expect(select.value).toBe("unavailable");
+    expect(select.textContent).toContain("Codex · GPT Advisor");
+    expect(select.textContent).toContain("Saved: stuck · saved-model (not loaded)");
+    expect(q(slot).getByText("stuck: Model discovery timed out after 5 seconds.")).toBeTruthy();
+    expect(slot.rpcCalls.some((call) => call.method === "setHostModel")).toBe(false);
+    slot.lifecycle.unmount();
+  });
+
   it("renders machine-local models and saves the selected provider/model pair", async () => {
     const configuration = {
       hosts: [
@@ -539,6 +582,8 @@ describe("advisor model settings", () => {
         },
       }),
     );
+    await waitFor(() => expect(select.value).toBe("0"));
+    expect(slot.rpcCalls.filter((call) => call.method === "modelConfiguration")).toHaveLength(1);
   });
 
   it("saves a supported reasoning level with the machine model", async () => {
