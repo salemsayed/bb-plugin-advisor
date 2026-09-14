@@ -112,6 +112,29 @@ All settings live in **Settings → Extensions → Advisor**.
 | Review timeout | 2 minutes | 30 seconds to 10 minutes. Exceeding it reports unavailable, never a pass. |
 | Transcript budget | 60,000 characters | 20,000 to 120,000. |
 
+### Enable Advisor for one thread
+
+Use the Advisor switch beside the model controls in an existing thread's
+composer. A thread's choice overrides **Enable advisor** in either direction:
+you can turn one thread off while the default is on, or turn one thread on
+while the default is off. New threads follow the global setting.
+
+Switching a thread off stops automatic reviews, advice injection, and automatic
+corrective turns, including a correction from a review already in progress.
+**Review now** and **Fix in new turn** remain available when explicitly requested.
+An agent session that still has the review tool receives an explicit skipped
+review response when it calls the tool while the thread is off.
+
+The same controls are available from the CLI. Omit the thread id when running
+inside that thread. Use `follow` to clear its override and track the global
+setting again:
+
+```sh
+bb advisor enable [thread-id]
+bb advisor disable [thread-id]
+bb advisor follow [thread-id]
+```
+
 ### Reviewer model, per machine
 
 The model section loads the live provider/model catalog independently from

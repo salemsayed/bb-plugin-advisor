@@ -271,7 +271,7 @@ function SeverityGlyph({
  * of truth.
  */
 function useThreadAdvisor<
-  Method extends "threadReviews" | "threadBadge" | "pendingAdvice",
+  Method extends "threadReviews" | "threadBadge" | "pendingAdvice" | "threadToggle",
 >(
   // Null on a composer scope with no thread yet: the rpc requires a non-empty
   // id, so calling with a placeholder would guarantee a validation error.
@@ -432,11 +432,115 @@ function badgeStanding(
   };
 }
 
-/**
- * The fix for the plugin's biggest blind spot: a post-turn finding is injected
- * into the next turn's instructions, so without this banner the agent changes
- * course and the human is never told why.
- */
+/** Keep state scoped to the thread even when the host reuses a composer. */
+function AdvisorThreadToggle() {
+  const { scope } = useComposer();
+  if (scope.kind !== "thread") return null;
+  return <ThreadAdvisorSwitch key={scope.threadId} threadId={scope.threadId} />;
+}
+
+function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
+  const rpc = useRpc<Contract>();
+  const { data: state, error, reload } = useThreadAdvisor(threadId, "threadToggle");
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
+
+  // Threads without an override also change when the global default changes.
+  useRealtime(
+    "advisor-settings-changed",
+    useCallback(() => { void reload(); }, [reload]),
+  );
+
+  const toggle = useCallback(async () => {
+    if (state === null || saving) return;
+    const next = !state.enabled;
+    setPending(next);
+    setSaving(true);
+    setWriteError(null);
+    try {
+      await rpc.call("setThreadToggle", { threadId, enabled: next });
+    } catch (caught) {
+      setWriteError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      await reload();
+      setPending(null);
+      setSaving(false);
+    }
+  }, [rpc, threadId, state, saving, reload]);
+
+  const problem = writeError ?? error;
+  if (problem) {
+    return (
+      <button
+        type="button"
+        title={`Advisor switch unavailable (${problem}). Click to retry.`}
+        aria-label="Advisor switch unavailable, click to retry"
+        onClick={() => {
+          setWriteError(null);
+          void reload();
+        }}
+        className="inline-flex h-7 shrink-0 items-center rounded-md border border-dashed border-border px-1.5 text-subtle-foreground hover:bg-state-hover"
+      >
+        <SeverityGlyph standing="unavailable" className="size-3.5 shrink-0" />
+      </button>
+    );
+  }
+
+  // Nothing to show until the state is known: a switch that renders "off" while
+  // it loads would misreport a thread the advisor is actually running in.
+  if (state === null) return null;
+
+  const enabled = pending ?? state.enabled;
+  const hint = enabled ? "Advisor on" : "Advisor off";
+
+  return (
+    <span className="group relative inline-flex shrink-0">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={enabled}
+        aria-label={hint}
+        disabled={saving}
+        onClick={() => void toggle()}
+        className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-1.5 hover:bg-state-hover ${
+          enabled
+            ? "border-border text-foreground"
+            : "border-dashed border-border text-subtle-foreground"
+        }`}
+      >
+        <SeverityGlyph standing="pass" className="size-3.5 shrink-0" />
+        {/* Track and knob are sized so both insets are 1px in either position:
+            the 28px track less its two 1px borders leaves 26px, and a 12px knob
+            offset by 1px travels exactly 12px. */}
+        <span
+          aria-hidden="true"
+          className={`relative h-4 w-7 shrink-0 rounded-full border transition-colors ${
+            enabled
+              ? "border-success bg-success"
+              : "border-border bg-surface-recessed"
+          }`}
+        >
+          <span
+            className={`absolute left-px top-px size-3 rounded-full bg-background transition-transform ${
+              enabled ? "translate-x-3" : "translate-x-0"
+            }`}
+          />
+        </span>
+      </button>
+      {/* Paint-only hover hint. `title` is deliberately absent here: the native
+          tooltip would arrive a second later and duplicate this one. */}
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-card px-2 py-1 text-2xs text-foreground opacity-0 shadow-md transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+      >
+        {hint}
+      </span>
+    </span>
+  );
+}
+
+/** Show pending advice before it is injected into the next turn. */
 function AdvisorComposerBanner() {
   const composer = useComposer();
   const navigate = useBbNavigate();
@@ -1301,5 +1405,11 @@ export default definePluginApp((app) => {
     id: "pending-advice",
     scopes: ["thread"],
     banners: [{ id: "pending-advice", chrome: "bare", component: AdvisorComposerBanner }],
+  });
+
+  app.composer.customize({
+    id: "advisor-switch",
+    scopes: ["thread"],
+    actions: [{ id: "thread-toggle", component: AdvisorThreadToggle }],
   });
 });
