@@ -125,6 +125,13 @@ corrective turns, including a correction from a review already in progress.
 An agent session that still has the review tool receives an explicit skipped
 review response when it calls the tool while the thread is off.
 
+On BB 0.43.1, a Codex session started with Advisor off keeps its original tool
+list when resumed. Switching Advisor on enables post-turn reviews immediately,
+but the `advisor_review` tool needs a fresh model session; stopping and resuming
+the same session is not enough. **Review now** works immediately in the Advisor
+panel. Clearing model context starts a fresh session, but also resets the
+agent's working context.
+
 The same controls are available from the CLI. Omit the thread id when running
 inside that thread. Use `follow` to clear its override and track the global
 setting again:
