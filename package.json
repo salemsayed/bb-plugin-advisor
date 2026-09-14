@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-advisor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A persistent independent reviewer for bb coding threads.",
   "license": "MIT",
   "author": {
@@ -22,6 +22,7 @@
     "app.tsx",
     "server.ts",
     "src/review.ts",
+    "src/async.ts",
     "scripts/build.mjs",
     "dist/app.css",
     "dist/app.js",

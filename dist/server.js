@@ -13781,6 +13781,31 @@ config(en_default());
 // server.ts
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 
+// src/async.ts
+async function withTimeout(operation, timeoutMs, message, parentSignal) {
+  const controller = new AbortController();
+  const signal = parentSignal ? AbortSignal.any([controller.signal, parentSignal]) : controller.signal;
+  let rejectAbort;
+  const aborted2 = new Promise((_, reject) => {
+    rejectAbort = () => reject(signal.reason);
+    if (signal.aborted) rejectAbort();
+    else signal.addEventListener("abort", rejectAbort, { once: true });
+  });
+  const timer = setTimeout(() => controller.abort(new Error(message)), timeoutMs);
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => {
+        signal.throwIfAborted();
+        return operation(signal);
+      }),
+      aborted2
+    ]);
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", rejectAbort);
+  }
+}
+
 // src/review.ts
 var SEVERITY_RANK = {
   pass: 0,
@@ -13859,6 +13884,7 @@ function formatTimelineRows(rows, maxCharacters) {
 var PLUGIN_ID = "advisor";
 var ADVISOR_TOOL = "advisor_review";
 var ADVISOR_TITLE_PREFIX = "Advisor \xB7 ";
+var MODEL_DISCOVERY_TIMEOUT_MS = 5e3;
 var ADVISOR_PERMISSION_MODE_PREFERENCE = [
   "accept-edits"
 ];
@@ -14638,38 +14664,66 @@ async function plugin(bb) {
       reasoningLevel: parsed.data.reasoning_level
     } : null;
   }
-  async function listHostModelOptions(hostId) {
-    const providers = (await bb.sdk.providers.list({ hostId })).filter(
-      (provider) => provider.available && narrowestReviewMode(provider.capabilities.permissionModes) !== null
+  const modelDiscoveryLifetime = new AbortController();
+  bb.onDispose(() => modelDiscoveryLifetime.abort());
+  function discover(operation) {
+    return withTimeout(
+      operation,
+      MODEL_DISCOVERY_TIMEOUT_MS,
+      "Model discovery timed out after 5 seconds. Try refreshing the models.",
+      modelDiscoveryLifetime.signal
+    );
+  }
+  async function listHostModelOptions(hostId, providerId) {
+    const providers = (await discover(
+      (signal) => bb.sdk.providers.list({ hostId, signal })
+    )).filter(
+      (provider) => (providerId === void 0 || provider.id === providerId) && provider.available && narrowestReviewMode(provider.capabilities.permissionModes) !== null
     );
     const optionGroups = await Promise.all(
       providers.map(async (provider) => {
-        const catalog = await bb.sdk.providers.models({
-          hostId,
-          providerId: provider.id
-        });
-        if (catalog.modelLoadError !== null) return [];
-        return catalog.models.map((model) => ({
-          providerId: provider.id,
-          providerName: provider.displayName,
-          model: model.model,
-          modelName: model.displayName || model.model,
-          isDefault: model.isDefault,
-          supportedReasoningLevels: model.supportedReasoningEfforts.map(
-            (effort) => effort.reasoningEffort
-          ),
-          defaultReasoningLevel: model.defaultReasoningEffort
-        }));
+        try {
+          const catalog = await discover(
+            (signal) => bb.sdk.providers.models({ hostId, providerId: provider.id, signal })
+          );
+          if (catalog.modelLoadError !== null) {
+            throw new Error(
+              `Model catalog is not available (${catalog.modelLoadError.code}).`
+            );
+          }
+          return {
+            error: null,
+            options: catalog.models.map((model) => ({
+              providerId: provider.id,
+              providerName: provider.displayName,
+              model: model.model,
+              modelName: model.displayName || model.model,
+              isDefault: model.isDefault,
+              supportedReasoningLevels: model.supportedReasoningEfforts.map(
+                (effort) => effort.reasoningEffort
+              ),
+              defaultReasoningLevel: model.defaultReasoningEffort
+            }))
+          };
+        } catch (error48) {
+          return {
+            options: [],
+            error: `${provider.displayName}: ${error48 instanceof Error ? error48.message : String(error48)}`
+          };
+        }
       })
     );
-    return optionGroups.flat().sort(
-      (left, right) => `${left.providerName}\0${left.modelName}`.localeCompare(
-        `${right.providerName}\0${right.modelName}`
+    return {
+      error: optionGroups.flatMap((group) => group.error ? [group.error] : []).join(" ") || null,
+      options: optionGroups.flatMap((group) => group.options).sort(
+        (left, right) => `${left.providerName}\0${left.modelName}`.localeCompare(
+          `${right.providerName}\0${right.modelName}`
+        )
       )
-    );
+    };
   }
   async function modelConfiguration() {
-    const hosts = await bb.sdk.hosts.list();
+    const hosts = await discover(() => bb.sdk.hosts.list());
     return {
       hosts: await Promise.all(
         hosts.map(async (host) => {
@@ -14684,13 +14738,13 @@ async function plugin(bb) {
             };
           }
           try {
+            const catalog = await listHostModelOptions(host.id);
             return {
               hostId: host.id,
               hostName: host.name,
               connected: true,
               selection: readHostModel(host.id),
-              options: await listHostModelOptions(host.id),
-              error: null
+              ...catalog
             };
           } catch (error48) {
             return {
@@ -15081,7 +15135,11 @@ Address this now. Inspect the current state, make the correction, verify it, the
         );
         return { ok: true };
       }
-      const options = await listHostModelOptions(hostId);
+      const { options, error: error48 } = await listHostModelOptions(
+        hostId,
+        selection.providerId
+      );
+      if (error48) throw new Error(error48);
       const available = options.some(
         (option) => option.providerId === selection.providerId && option.model === selection.model && (selection.reasoningLevel === "default" || option.supportedReasoningLevels.includes(
           selection.reasoningLevel

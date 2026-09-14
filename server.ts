@@ -4,6 +4,7 @@ import type {
   BbPluginApi,
   PluginAgentConfigurationContext,
 } from "@get-bb/plugin-sdk";
+import { withTimeout } from "./src/async.js";
 import {
   formatReview,
   formatTimelineRows,
@@ -18,6 +19,7 @@ import {
 const PLUGIN_ID = "advisor";
 const ADVISOR_TOOL = "advisor_review";
 const ADVISOR_TITLE_PREFIX = "Advisor · ";
+const MODEL_DISCOVERY_TIMEOUT_MS = 5_000;
 /**
  * Permission modes the reviewer will accept, least privileged first. The mode
  * is negotiated against what the provider actually advertises rather than
@@ -1094,44 +1096,77 @@ export default async function plugin(bb: BbPluginApi) {
       : null;
   }
 
-  async function listHostModelOptions(hostId: string) {
-    const providers = (await bb.sdk.providers.list({ hostId })).filter(
+  const modelDiscoveryLifetime = new AbortController();
+  bb.onDispose(() => modelDiscoveryLifetime.abort());
+
+  function discover<T>(operation: (signal: AbortSignal) => Promise<T>) {
+    return withTimeout(
+      operation,
+      MODEL_DISCOVERY_TIMEOUT_MS,
+      "Model discovery timed out after 5 seconds. Try refreshing the models.",
+      modelDiscoveryLifetime.signal,
+    );
+  }
+
+  async function listHostModelOptions(hostId: string, providerId?: string) {
+    const providers = (await discover((signal) =>
+      bb.sdk.providers.list({ hostId, signal }),
+    )).filter(
       (provider) =>
+        (providerId === undefined || provider.id === providerId) &&
         provider.available &&
         narrowestReviewMode(provider.capabilities.permissionModes) !==
           null,
     );
     const optionGroups = await Promise.all(
       providers.map(async (provider) => {
-        const catalog = await bb.sdk.providers.models({
-          hostId,
-          providerId: provider.id,
-        });
-        if (catalog.modelLoadError !== null) return [];
-        return catalog.models.map((model) => ({
-          providerId: provider.id,
-          providerName: provider.displayName,
-          model: model.model,
-          modelName: model.displayName || model.model,
-          isDefault: model.isDefault,
-          supportedReasoningLevels: model.supportedReasoningEfforts.map(
-            (effort) => effort.reasoningEffort,
-          ),
-          defaultReasoningLevel: model.defaultReasoningEffort,
-        }));
+        try {
+          const catalog = await discover((signal) =>
+            bb.sdk.providers.models({ hostId, providerId: provider.id, signal }),
+          );
+          if (catalog.modelLoadError !== null) {
+            throw new Error(
+              `Model catalog is not available (${catalog.modelLoadError.code}).`,
+            );
+          }
+          return {
+            error: null,
+            options: catalog.models.map((model) => ({
+              providerId: provider.id,
+              providerName: provider.displayName,
+              model: model.model,
+              modelName: model.displayName || model.model,
+              isDefault: model.isDefault,
+              supportedReasoningLevels: model.supportedReasoningEfforts.map(
+                (effort) => effort.reasoningEffort,
+              ),
+              defaultReasoningLevel: model.defaultReasoningEffort,
+            })),
+          };
+        } catch (error) {
+          return {
+            options: [],
+            error: `${provider.displayName}: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
       }),
     );
-    return optionGroups
-      .flat()
-      .sort((left, right) =>
-        `${left.providerName}\0${left.modelName}`.localeCompare(
-          `${right.providerName}\0${right.modelName}`,
+    return {
+      error: optionGroups
+        .flatMap((group) => group.error ? [group.error] : [])
+        .join(" ") || null,
+      options: optionGroups
+        .flatMap((group) => group.options)
+        .sort((left, right) =>
+          `${left.providerName}\0${left.modelName}`.localeCompare(
+            `${right.providerName}\0${right.modelName}`,
+          ),
         ),
-      );
+    };
   }
 
   async function modelConfiguration() {
-    const hosts = await bb.sdk.hosts.list();
+    const hosts = await discover(() => bb.sdk.hosts.list());
     return {
       hosts: await Promise.all(
         hosts.map(async (host) => {
@@ -1146,13 +1181,13 @@ export default async function plugin(bb: BbPluginApi) {
             };
           }
           try {
+            const catalog = await listHostModelOptions(host.id);
             return {
               hostId: host.id,
               hostName: host.name,
               connected: true,
               selection: readHostModel(host.id),
-              options: await listHostModelOptions(host.id),
-              error: null,
+              ...catalog,
             };
           } catch (error) {
             return {
@@ -1661,7 +1696,11 @@ export default async function plugin(bb: BbPluginApi) {
         );
         return { ok: true } as const;
       }
-      const options = await listHostModelOptions(hostId);
+      const { options, error } = await listHostModelOptions(
+        hostId,
+        selection.providerId,
+      );
+      if (error) throw new Error(error);
       const available = options.some(
         (option) =>
           option.providerId === selection.providerId &&

@@ -243,6 +243,14 @@ archiving keeps it.
 
 </details>
 
+## When model choices load slowly
+
+The model settings wait at most five seconds for each discovery call. A slow or
+failed provider is shown with its own error; models from healthy providers
+remain available. Use **Refresh models** to retry. A saved model that could not
+be loaded stays visibly selected and is not silently changed to Follow primary.
+Saving checks only the chosen provider, without rediscovering every catalog.
+
 ## When a review cannot run
 
 When the advisor cannot run — the provider does not support the reviewer's

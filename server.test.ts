@@ -2395,6 +2395,106 @@ END_ADVISOR_RESULT`;
 });
 
 describe("machine-scoped model selection", () => {
+  function discoveryProvider(id: string) {
+    return { id, displayName: id, available: true,
+      capabilities: { permissionModes: ["accept-edits"] } };
+  }
+  const discoveryCatalog = {
+    providers: [], modelLoadError: null,
+    models: [{ model: "review-model", displayName: "Review model", isDefault: true,
+      supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+      defaultReasoningEffort: "medium" }],
+  };
+
+  it("bounds a stuck provider without dropping healthy models on either machine", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("hosts.list", async () => [
+      { id: "host-test", name: "Laptop", status: "connected" },
+      { id: "host-other", name: "Server", status: "connected" },
+    ]);
+    harness.sdk.stub("providers.list", async () => [discoveryProvider("codex"), discoveryProvider("stuck")]);
+    let stuckSignal: AbortSignal | undefined;
+    harness.sdk.stub("providers.models", async ({ hostId, providerId, signal }) => {
+      if (hostId === "host-test" && providerId === "stuck") {
+        stuckSignal = signal;
+        return new Promise(() => {}); // Deliberately ignores cancellation.
+      }
+      return discoveryCatalog;
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = harness.callRpc("modelConfiguration", null);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const result = await pending as { hosts: Array<{ options: unknown[]; error: string | null }> };
+      expect(result.hosts[0]?.options).toHaveLength(1);
+      expect(result.hosts[0]?.error).toContain("stuck: Model discovery timed out");
+      expect(result.hosts[1]?.options).toHaveLength(2);
+      expect(result.hosts[1]?.error).toBeNull();
+      expect(stuckSignal?.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["reject", "fallback"])("retains healthy options when another provider reports %s", async (failure) => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("hosts.list", async () => [{ id: "host-test", name: "Laptop", status: "connected" }]);
+    harness.sdk.stub("providers.list", async () => [discoveryProvider("codex"), discoveryProvider("broken")]);
+    harness.sdk.stub("providers.models", async ({ providerId }) => {
+      if (providerId === "codex") return discoveryCatalog;
+      if (failure === "reject") throw new Error("provider disconnected");
+      return { ...discoveryCatalog, modelLoadError: { providerId, code: "auth_required" } };
+    });
+    const result = await harness.callRpc("modelConfiguration", null);
+    expect(result).toMatchObject({ hosts: [{
+      options: [{ providerId: "codex", model: "review-model" }],
+      error: expect.stringContaining("broken:"),
+    }] });
+  });
+
+  it("bounds provider enumeration and keeps another machine usable", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("hosts.list", async () => [
+      { id: "host-test", name: "Laptop", status: "connected" },
+      { id: "host-other", name: "Server", status: "connected" },
+    ]);
+    harness.sdk.stub("providers.list", async ({ hostId }) => hostId === "host-test"
+      ? new Promise(() => {}) : [discoveryProvider("codex")]);
+    harness.sdk.stub("providers.models", async () => discoveryCatalog);
+    vi.useFakeTimers();
+    try {
+      const pending = harness.callRpc("modelConfiguration", null);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await pending).toMatchObject({ hosts: [
+        { options: [], error: expect.stringContaining("timed out") },
+        { options: [{ providerId: "codex" }], error: null },
+      ] });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("validates only the chosen provider when saving and preserves its selection", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("providers.list", async () => [discoveryProvider("codex"), discoveryProvider("stuck")]);
+    harness.sdk.stub("providers.models", async ({ providerId }) => {
+      if (providerId === "stuck") return new Promise(() => {});
+      return discoveryCatalog;
+    });
+    const selection = { providerId: "codex", model: "review-model", reasoningLevel: "medium" };
+    await harness.callRpc("setHostModel", { hostId: "host-test", selection });
+    expect(harness.sdk.callsTo("providers.models")).toHaveLength(1);
+    expect(harness.sdk.callsTo("providers.models")[0]?.[0]).toMatchObject({ providerId: "codex" });
+    harness.sdk.stub("hosts.list", async () => [{ id: "host-test", name: "Laptop", status: "disconnected" }]);
+    expect(await harness.callRpc("modelConfiguration", null)).toMatchObject({ hosts: [{ selection }] });
+  });
+
+  it("cancels pending discovery when the plugin is unloaded", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("hosts.list", async () => new Promise(() => {}));
+    const pending = harness.callRpc("modelConfiguration", null);
+    const rejected = expect(pending).rejects.toThrow();
+    await harness.lifecycle.dispose();
+    await rejected;
+  });
+
   it("discovers each machine's live catalog and uses that machine's saved model", async () => {
     const { harness, spawn, setTimelineSeq } = await loadAdvisor(`ADVISOR_RESULT
 severity: pass
