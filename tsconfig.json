@@ -19,6 +19,7 @@
     "server.ts",
     "app.tsx",
     "src",
-    "*.test.ts"
+    "*.test.ts",
+    "*.test.tsx"
   ]
 }

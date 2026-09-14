@@ -27,6 +27,9 @@ jobs:
         run: npm ci
 
       - name: Typecheck, test, and build
+        env:
+          # Builds must use the locked builder even inside another BB version.
+          BB_CLI: /must-not-use-global-bb
         run: npm run verify
 
       - name: Verify publishable package

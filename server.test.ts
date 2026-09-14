@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
+  makePluginAgentConfigurationContext,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
-import type { PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import plugin, { parseRuntimeSettings } from "./server.js";
 
-const primaryContext = {
+const primaryContext = makePluginAgentConfigurationContext({
   thread: {
     id: "thread-primary",
     title: "Implement feature",
@@ -33,7 +33,7 @@ const primaryContext = {
     capabilities: { supportsNativeUserQuestion: false },
   },
   origin: { kind: null, pluginId: null },
-} satisfies PluginAgentConfigurationContext;
+});
 
 function timeline(maxSeq: number) {
   return {
