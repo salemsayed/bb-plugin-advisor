@@ -278,22 +278,33 @@ function useThreadAdvisor<
   // id, so calling with a placeholder would guarantee a validation error.
   threadId: string | null,
   method: Method,
+  initial: PluginRpcResult<Contract[Method]> | null = null,
 ) {
   const rpc = useRpc<Contract>();
-  const [data, setData] = useState<PluginRpcResult<Contract[Method]> | null>(
-    null,
-  );
+  const [data, setData] = useState(initial);
   const [error, setError] = useState<string | null>(null);
+  // On a slow link responses can land out of order. Only the newest request,
+  // or an authoritative result handed to `replace` after it, may set state.
+  const latest = useRef(0);
 
   const load = useCallback(async () => {
     if (threadId === null) return;
+    const request = ++latest.current;
     try {
       setError(null);
-      setData(await rpc.call(method, { threadId }));
+      const result = await rpc.call(method, { threadId });
+      if (request === latest.current) setData(result);
     } catch (caught) {
+      if (request !== latest.current) return;
       setError(caught instanceof Error ? caught.message : String(caught));
     }
   }, [rpc, method, threadId]);
+
+  const replace = useCallback((result: PluginRpcResult<Contract[Method]>) => {
+    latest.current += 1;
+    setError(null);
+    setData(result);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -328,7 +339,7 @@ function useThreadAdvisor<
     void load();
   }, [connection, wasConnected, load]);
 
-  return { data, error, reload: load };
+  return { data, error, reload: load, replace };
 }
 
 function AdvisorHeaderBadge({
@@ -445,19 +456,20 @@ function travel(start: { x: number; y: number }, event: React.PointerEvent) {
  * only renders plugin actions while the composer is expanded, and collapses it
  * once the editor loses focus: a tap that moves focus dismisses the keyboard
  * and unmounts the button before iOS delivers the click. So a press never takes
- * focus, and a touch acts on `pointerup` like the host's own submit button,
- * dropping the click that trails it. Keyboard activation clicks with `detail`
- * 0 and still acts.
+ * focus, and a touch tap acts on `pointerup` like the host's own submit button,
+ * dropping the click that trails it. A touch this handler did not treat as a
+ * tap leaves the decision to the browser's click. Keyboard activation clicks
+ * with `detail` 0 and always acts.
  */
 function useComposerActionPress(onPress: () => void) {
   const tap = useRef<{ pointerId: number; x: number; y: number } | null>(null);
-  const touchPress = useRef(false);
+  const tapHandled = useRef(false);
 
   return {
     onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
       tap.current = null;
-      touchPress.current = event.pointerType === "touch";
-      if (!touchPress.current || !event.isPrimary || event.button !== 0) return;
+      tapHandled.current = false;
+      if (event.pointerType !== "touch" || !event.isPrimary || event.button !== 0) return;
       event.preventDefault();
       tap.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
     },
@@ -468,33 +480,45 @@ function useComposerActionPress(onPress: () => void) {
       }
     },
     onPointerCancel: () => {
-      // The browser took the gesture, usually to scroll; no click follows.
       tap.current = null;
-      touchPress.current = false;
     },
     onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => {
       const start = tap.current;
       tap.current = null;
-      if (start?.pointerId !== event.pointerId) return;
+      if (start?.pointerId !== event.pointerId || travel(start, event) > TAP_SLOP_PX) return;
+      // A fingertip is wider than this 28px control: a tap that lifts just
+      // outside it still counts, as the browser's own click would.
       const box = event.currentTarget.getBoundingClientRect();
-      const inside =
-        event.clientX >= box.left &&
-        event.clientX <= box.right &&
-        event.clientY >= box.top &&
-        event.clientY <= box.bottom;
-      if (inside && travel(start, event) <= TAP_SLOP_PX) onPress();
+      const nearby =
+        event.clientX >= box.left - TAP_SLOP_PX &&
+        event.clientX <= box.right + TAP_SLOP_PX &&
+        event.clientY >= box.top - TAP_SLOP_PX &&
+        event.clientY <= box.bottom + TAP_SLOP_PX;
+      if (!nearby) return;
+      tapHandled.current = true;
+      onPress();
     },
     onMouseDown: (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
     },
     onClick: (event: React.MouseEvent<HTMLButtonElement>) => {
-      const afterTouch = touchPress.current;
-      touchPress.current = false;
-      if (afterTouch && event.detail > 0) return;
+      const handled = tapHandled.current;
+      tapHandled.current = false;
+      if (handled && event.detail > 0) return;
       onPress();
     },
   };
 }
+
+type ToggleState = PluginRpcResult<Contract["threadToggle"]>;
+
+/**
+ * The last switch state this page saw for each thread. The host unmounts
+ * composer actions whenever the mobile composer collapses, so without it the
+ * switch would vanish for a round trip every time the composer reopens, and a
+ * tap in that gap lands on nothing. The fetch on mount still corrects it.
+ */
+const knownToggles = new Map<string, ToggleState>();
 
 /** Keep state scoped to the thread even when the host reuses a composer. */
 function AdvisorThreadToggle() {
@@ -505,10 +529,21 @@ function AdvisorThreadToggle() {
 
 function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
   const rpc = useRpc<Contract>();
-  const { data: state, error, reload } = useThreadAdvisor(threadId, "threadToggle");
+  const { data: state, error, reload, replace } = useThreadAdvisor(
+    threadId,
+    "threadToggle",
+    knownToggles.get(threadId) ?? null,
+  );
   const [pending, setPending] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
   const [writeError, setWriteError] = useState<string | null>(null);
+  // No tap is dropped: each flips what the switch shows, writes go out one at a
+  // time, and the last value asked for is the one the server ends up holding.
+  const requested = useRef<boolean | null>(null);
+  const writing = useRef(false);
+
+  useEffect(() => {
+    if (state !== null) knownToggles.set(threadId, state);
+  }, [threadId, state]);
 
   // Threads without an override also change when the global default changes.
   useRealtime(
@@ -516,23 +551,37 @@ function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
     useCallback(() => { void reload(); }, [reload]),
   );
 
-  const toggle = useCallback(async () => {
-    if (state === null || saving) return;
-    const next = !state.enabled;
-    setPending(next);
-    setSaving(true);
-    setWriteError(null);
+  const write = useCallback(async () => {
+    writing.current = true;
     try {
-      await rpc.call("setThreadToggle", { threadId, enabled: next });
+      while (requested.current !== null) {
+        const target = requested.current;
+        const result = await rpc.call("setThreadToggle", { threadId, enabled: target });
+        knownToggles.set(threadId, result);
+        replace(result);
+        if (requested.current === target) requested.current = null;
+      }
     } catch (caught) {
+      requested.current = null;
       setWriteError(caught instanceof Error ? caught.message : String(caught));
+      void reload();
     } finally {
-      await reload();
+      writing.current = false;
       setPending(null);
-      setSaving(false);
     }
-  }, [rpc, threadId, state, saving, reload]);
-  const togglePress = useComposerActionPress(() => void toggle());
+  }, [rpc, threadId, replace, reload]);
+
+  const toggle = useCallback(() => {
+    // Prefer the map to render state: it already holds a write result that
+    // landed after the last render.
+    const current =
+      requested.current ?? knownToggles.get(threadId)?.enabled ?? state?.enabled;
+    if (current === undefined) return;
+    requested.current = !current;
+    setPending(!current);
+    if (!writing.current) void write();
+  }, [threadId, state, write]);
+  const togglePress = useComposerActionPress(toggle);
   const retryPress = useComposerActionPress(() => {
     setWriteError(null);
     void reload();
@@ -553,8 +602,9 @@ function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
     );
   }
 
-  // Nothing to show until the state is known: a switch that renders "off" while
-  // it loads would misreport a thread the advisor is actually running in.
+  // Nothing to show until the state is known, from a fetch or this page's last
+  // answer: a switch that renders "off" while it loads would misreport a
+  // thread the advisor is actually running in.
   if (state === null) return null;
 
   const enabled = pending ?? state.enabled;
@@ -567,7 +617,9 @@ function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
         role="switch"
         aria-checked={enabled}
         aria-label={hint}
-        disabled={saving}
+        // Never `disabled` mid-write: React skips a disabled button's
+        // mousedown handler, and that is what keeps the editor focused.
+        aria-busy={pending !== null}
         {...togglePress}
         className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-1.5 hover:bg-state-hover ${
           enabled
@@ -606,7 +658,7 @@ function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
   );
 }
 
-/** Show pending advice before it is injected into the next turn. */
+/** Show pending advice before it is sent into the next turn. */
 function AdvisorComposerBanner() {
   const composer = useComposer();
   const navigate = useBbNavigate();
@@ -623,7 +675,7 @@ function AdvisorComposerBanner() {
 
   if (!threadId) return null;
 
-  // A failed fetch must not look like "no advice": the advice is still injected
+  // A failed fetch must not look like "no advice": the advice is still sent
   // into the next turn either way, which is the blind spot this banner exists
   // to close.
   const problem = dismissError ?? error;

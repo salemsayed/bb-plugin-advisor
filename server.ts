@@ -18,6 +18,8 @@ import {
 
 const PLUGIN_ID = "advisor";
 const ADVISOR_TOOL = "advisor_review";
+/** What the agent is told to do while Advisor is on for its thread. */
+const ADVISOR_POLICY = `Advisor policy: for substantial coding, debugging, refactoring, or configuration work, you MUST call ${ADVISOR_TOOL} exactly once after your implementation and checks, before your final answer. If it reports a concern or blocker, correct the work and re-verify before completing. Do not call it for greetings or simple factual conversation.`;
 const ADVISOR_TITLE_PREFIX = "Advisor · ";
 const MODEL_DISCOVERY_TIMEOUT_MS = 5_000;
 /**
@@ -37,7 +39,7 @@ const ADVISOR_PERMISSION_MODE_LABEL = "accept-edits mode";
 type AdvisorPermissionMode = NonNullable<
   Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0]["permissionMode"]
 >;
-/** Advice about a turn this old is stale; it is retired instead of injected. */
+/** Advice about a turn this old is stale; it is retired instead of sent. */
 const PENDING_ADVICE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const CANCELLED_REASON =
   "the primary turn was cancelled before the review finished";
@@ -554,6 +556,24 @@ function formatOutcome(outcome: AdvisorOutcome): string {
   return `Advisor unavailable: ${outcome.reason}. No review was performed, so this is NOT an approval — say plainly that the advisor did not run instead of claiming the work was reviewed.`;
 }
 
+/** The message that brings a running agent up to date with Advisor. */
+function turnBriefing(tellPolicy: boolean, findings: readonly AdvisorFinding[]): string {
+  const parts: string[] = [];
+  if (tellPolicy) {
+    parts.push(
+      `Advisor was switched on for this thread after your session started. ${ADVISOR_POLICY} If ${ADVISOR_TOOL} is not among your tools yet, finish normally: Advisor still reviews each completed turn.`,
+    );
+  }
+  if (findings.length > 0) {
+    parts.push(
+      `A late independent review queue from previous turns contains:\n${findings
+        .map(formatReview)
+        .join("\n\n")}\nAddress every finding above before proceeding.`,
+    );
+  }
+  return parts.join("\n\n");
+}
+
 function describeError(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   if (!("body" in error)) return String(error);
@@ -707,7 +727,9 @@ export default async function plugin(bb: BbPluginApi) {
 
   let currentSettings = parseRuntimeSettings(await settings.get());
   settings.onChange((next) => {
+    const wasEnabled = currentSettings.enabled;
     currentSettings = parseRuntimeSettings(next);
+    if (!wasEnabled && currentSettings.enabled) recordGlobalSwitchOn();
     // Threads that follow the global default have no thread-scoped event to
     // wake them, so their toggle would keep showing the previous default until
     // a remount.
@@ -821,6 +843,20 @@ export default async function plugin(bb: BbPluginApi) {
       updated_at INTEGER NOT NULL
     )`,
     `DROP TABLE IF EXISTS advisor_new_thread_default`,
+    // bb fixes a provider session's instructions when it builds the session,
+    // so Advisor switched on mid-session never reaches the agent through them.
+    // `told_at` is when the thread's agent last received the policy (its session
+    // started with Advisor on, or a turn was briefed), `switched_on_at` when a
+    // thread change last turned Advisor on.
+    `CREATE TABLE IF NOT EXISTS advisor_agent_briefings (
+      primary_thread_id TEXT PRIMARY KEY,
+      told_at INTEGER,
+      switched_on_at INTEGER
+    )`,
+    `CREATE TABLE IF NOT EXISTS advisor_global_switch (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      switched_on_at INTEGER NOT NULL
+    )`,
   ]);
 
   const primaryContexts = new Map<string, PrimaryContext>();
@@ -887,18 +923,73 @@ export default async function plugin(bb: BbPluginApi) {
     primaryThreadId: string,
     enabled: boolean | null,
   ): void {
+    const wasEnabled = advisorEnabledFor(primaryThreadId);
     if (enabled === null) {
       db.prepare(
         `DELETE FROM advisor_thread_settings WHERE primary_thread_id = ?`,
       ).run(primaryThreadId);
-      return;
+    } else {
+      db.prepare(
+        `INSERT INTO advisor_thread_settings (primary_thread_id, enabled, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(primary_thread_id) DO UPDATE
+           SET enabled = excluded.enabled, updated_at = excluded.updated_at`,
+      ).run(primaryThreadId, enabled ? 1 : 0, Date.now());
     }
+    if (!wasEnabled && advisorEnabledFor(primaryThreadId)) {
+      db.prepare(
+        `INSERT INTO advisor_agent_briefings (primary_thread_id, switched_on_at)
+         VALUES (?, ?)
+         ON CONFLICT(primary_thread_id) DO UPDATE
+           SET switched_on_at = excluded.switched_on_at`,
+      ).run(primaryThreadId, Date.now());
+    }
+  }
+
+  function recordGlobalSwitchOn(): void {
     db.prepare(
-      `INSERT INTO advisor_thread_settings (primary_thread_id, enabled, updated_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(primary_thread_id) DO UPDATE
-         SET enabled = excluded.enabled, updated_at = excluded.updated_at`,
-    ).run(primaryThreadId, enabled ? 1 : 0, Date.now());
+      `INSERT INTO advisor_global_switch (id, switched_on_at) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET switched_on_at = excluded.switched_on_at`,
+    ).run(Date.now());
+  }
+
+  /** The agent has the policy as of now: its session started with it, or a turn was briefed. */
+  function recordPolicyTold(primaryThreadId: string): void {
+    db.prepare(
+      `INSERT INTO advisor_agent_briefings (primary_thread_id, told_at)
+       VALUES (?, ?)
+       ON CONFLICT(primary_thread_id) DO UPDATE SET told_at = excluded.told_at`,
+    ).run(primaryThreadId, Date.now());
+  }
+
+  const briefingRowSchema = z.object({
+    told_at: z.number().nullable(),
+    switched_on_at: z.number().nullable(),
+  });
+
+  /** Whether Advisor was turned on after this thread's agent last heard its policy. */
+  function policyBriefingDue(primaryThreadId: string): boolean {
+    const parsed = briefingRowSchema.safeParse(
+      db
+        .prepare(
+          `SELECT told_at, switched_on_at FROM advisor_agent_briefings
+           WHERE primary_thread_id = ?`,
+        )
+        .get(primaryThreadId),
+    );
+    const row = parsed.success ? parsed.data : null;
+    const global = z
+      .object({ switched_on_at: z.number() })
+      .safeParse(
+        db.prepare(`SELECT switched_on_at FROM advisor_global_switch WHERE id = 1`).get(),
+      );
+    const switchedOnAt = Math.max(
+      row?.switched_on_at ?? 0,
+      readThreadOverride(primaryThreadId) === null && global.success
+        ? global.data.switched_on_at
+        : 0,
+    );
+    return switchedOnAt > (row?.told_at ?? 0);
   }
 
   /**
@@ -948,7 +1039,7 @@ export default async function plugin(bb: BbPluginApi) {
   /**
    * Settled from either direction: the user decided it, or the advisor
    * re-checked and closed it. Both keep a finding out of the badge and out of
-   * the next turn's instructions.
+   * the next turn's briefing.
    */
   function chainIsResolved(row: ReviewRow): boolean {
     const root = readChainRoot(row.primary_thread_id, chainKeyOf(row));
@@ -1014,7 +1105,7 @@ export default async function plugin(bb: BbPluginApi) {
   /**
    * Record that this finding's text actually reached the primary agent. Only
    * the two moments that genuinely hand it over call this — the tool result
-   * and the injected instruction — so "sent to the agent" stays a fact rather
+   * and the turn briefing — so "sent to the agent" stays a fact rather
    * than an artefact of the pending-advice sweep.
    */
   function markSent(rowId: number): void {
@@ -1053,19 +1144,6 @@ export default async function plugin(bb: BbPluginApi) {
        WHERE id = ? AND delivered_at IS NULL`,
     ).run(Date.now(), rowId);
     if (sent) markSent(rowId);
-  }
-
-  function consumePending(primaryThreadId: string): ReviewRow[] {
-    const rows = readPendingAdvice(primaryThreadId).slice(
-      0,
-      MAX_PENDING_ADVICE_PER_TURN,
-    );
-    if (rows.length === 0) return [];
-    db.transaction(() => {
-      for (const row of rows) markReviewDelivered(row.id, true);
-    })();
-    publishThreadChanged(primaryThreadId);
-    return rows;
   }
 
   function rememberContext(context: PluginAgentConfigurationContext): void {
@@ -1802,7 +1880,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
       if (outcome.kind === "reviewed") {
         // Only this exact result reached the agent. Older queued findings stay
-        // pending until they are actually injected or explicitly settled.
+        // pending until they are actually sent or explicitly settled.
         markReviewDelivered(
           outcome.row.id,
           outcome.row.severity !== "pass",
@@ -1821,20 +1899,34 @@ export default async function plugin(bb: BbPluginApi) {
     }
 
     rememberContext(context);
-    const pending = consumePending(context.thread.id);
-    const carriedAdvice =
-      pending.length > 0
-        ? `\n\nA late independent review queue from previous turns contains:\n${pending
-            .map((row) => formatReview(rowToReview(row)))
-            .join("\n\n")}\nAddress every finding above before proceeding.`
-        : "";
-    return {
-      tools: [ADVISOR_TOOL],
-      skills: [],
-      instructions:
-        `Advisor policy: for substantial coding, debugging, refactoring, or configuration work, you MUST call ${ADVISOR_TOOL} exactly once after your implementation and checks, before your final answer. If it reports a concern or blocker, correct the work and re-verify before completing. Do not call it for greetings or simple factual conversation.${carriedAdvice}`,
-    };
+    // Queued findings do not ride along here: a session that is already running
+    // keeps the instructions it started with, so they would be marked sent
+    // without reaching the agent. The turn briefing delivers them instead.
+    return { tools: [ADVISOR_TOOL], skills: [], instructions: ADVISOR_POLICY };
   });
+
+  // A thread's first message builds its provider session, instructions and all,
+  // so an agent that starts with Advisor on already has the policy. A bb
+  // without this hook costs a new thread one redundant briefing at most.
+  try {
+    bb.experimental_hooks.on("message.dispatch", (context) => {
+      try {
+        if (
+          context.thread.status === "pending" &&
+          context.thread.originPluginId === null &&
+          advisorEnabledFor(context.thread.id)
+        ) {
+          recordPolicyTold(context.thread.id);
+        }
+      } catch (error) {
+        // Bookkeeping only: a throwing hook would fail the user's message.
+        bb.log.warn(`Advisor could not record the session start of ${context.thread.id}: ${describeError(error)}`);
+      }
+      return { action: "proceed" };
+    });
+  } catch (error) {
+    bb.log.warn(`Advisor cannot see session starts on this bb: ${describeError(error)}`);
+  }
 
   async function resolvePrimaryContext(primaryThreadId: string): Promise<PrimaryContext> {
     const cached = primaryContexts.get(primaryThreadId);
@@ -2518,6 +2610,58 @@ export default async function plugin(bb: BbPluginApi) {
     return true;
   }
 
+  /** Threads with a briefing on its way, so a repeated event cannot send two. */
+  const briefingThreads = new Set<string>();
+
+  /**
+   * Brief a turn that just started with queued late findings, and with the
+   * Advisor policy when Advisor was switched on after the agent's session
+   * began. Both travel as a message because a running session ignores changed
+   * instructions.
+   */
+  bb.events.on("thread.active", async ({ thread }) => {
+    if (
+      thread.originPluginId !== null ||
+      thread.visibility === "hidden" ||
+      briefingThreads.has(thread.id) ||
+      !advisorEnabledFor(thread.id)
+    ) {
+      return;
+    }
+    const tellPolicy = policyBriefingDue(thread.id);
+    const findings = readPendingAdvice(thread.id).slice(0, MAX_PENDING_ADVICE_PER_TURN);
+    if (!tellPolicy && findings.length === 0) return;
+
+    briefingThreads.add(thread.id);
+    try {
+      // A steer to a thread whose turn already ended would start a new turn
+      // rather than join this one.
+      const current = await bb.sdk.threads.get({ threadId: thread.id });
+      if (current.status !== "active") return;
+      await bb.sdk.threads.send({
+        threadId: thread.id,
+        mode: "steer",
+        input: [
+          {
+            type: "text",
+            visibility: "agent-only",
+            text: turnBriefing(tellPolicy, findings.map(rowToReview)),
+            mentions: [],
+          },
+        ],
+      });
+      db.transaction(() => {
+        for (const row of findings) markReviewDelivered(row.id, true);
+        if (tellPolicy) recordPolicyTold(thread.id);
+      })();
+      if (findings.length > 0) publishThreadChanged(thread.id);
+    } catch (error) {
+      bb.log.warn(`Advisor could not brief the running turn of ${thread.id}: ${describeError(error)}`);
+    } finally {
+      briefingThreads.delete(thread.id);
+    }
+  });
+
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
     // Always consume the one-turn suppression flag, even when settings or the
     // event payload make this idle transition ineligible for post-turn review.
@@ -2605,6 +2749,9 @@ export default async function plugin(bb: BbPluginApi) {
       );
       db.prepare(
         `DELETE FROM advisor_thread_settings WHERE primary_thread_id = ?`,
+      ).run(thread.id);
+      db.prepare(
+        `DELETE FROM advisor_agent_briefings WHERE primary_thread_id = ?`,
       ).run(thread.id);
     }
 

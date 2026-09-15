@@ -82,13 +82,39 @@ const switchCustomization = app.composerCustomizations.find(
   (customization) => customization.id === "advisor-switch",
 )!;
 const toggleSlot = switchCustomization.actions![0]!;
-const threadComposer = {
-  scope: { kind: "thread", threadId: "t1" } as const,
-};
+/**
+ * The switch remembers the last state it saw per thread across mounts, so every
+ * test uses its own thread: a shared id would start one test from another's
+ * leftovers.
+ */
+function threadComposer(threadId: string) {
+  return { scope: { kind: "thread", threadId } as const };
+}
+const touch = { pointerType: "touch", pointerId: 1, isPrimary: true };
+
+function toggleWrites(slot: { inspection: { rpcCalls: { method: string; input: unknown }[] } }) {
+  return slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle");
+}
+
+/** A switch whose server state follows every write, starting on. */
+function flippableSwitch(threadId: string) {
+  let enabled = true;
+  return renderSlot(toggleSlot, {}, {
+    composer: threadComposer(threadId),
+    rpc: {
+      threadToggle: () => ({ enabled, override: enabled, globalEnabled: true }),
+      setThreadToggle: (input) => {
+        enabled = z.object({ enabled: z.boolean() }).parse(input).enabled;
+        return { enabled, override: enabled, globalEnabled: true };
+      },
+    },
+  });
+}
+
 describe("advisor thread switch", () => {
   it("reports the effective state of a thread that follows the default", async () => {
     const slot = renderSlot(toggleSlot, {}, {
-      composer: threadComposer,
+      composer: threadComposer("t-default"),
       rpc: {
         threadToggle: () => ({
           enabled: false,
@@ -108,7 +134,7 @@ describe("advisor thread switch", () => {
   it("writes an explicit override for this thread when clicked", async () => {
     let stored: { enabled: boolean | null } = { enabled: null };
     const slot = renderSlot(toggleSlot, {}, {
-      composer: threadComposer,
+      composer: threadComposer("t-override"),
       rpc: {
         threadToggle: () => ({
           enabled: stored.enabled ?? true,
@@ -133,69 +159,129 @@ describe("advisor thread switch", () => {
         "false",
       ),
     );
-    expect(
-      slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle"),
-    ).toEqual([
-      { method: "setThreadToggle", input: { threadId: "t1", enabled: false } },
+    expect(toggleWrites(slot)).toEqual([
+      { method: "setThreadToggle", input: { threadId: "t-override", enabled: false } },
     ]);
   });
-
-  function flippableSwitch() {
-    let enabled = true;
-    return renderSlot(toggleSlot, {}, {
-      composer: threadComposer,
-      rpc: {
-        threadToggle: () => ({ enabled, override: enabled, globalEnabled: true }),
-        setThreadToggle: (input) => {
-          enabled = z.object({ enabled: z.boolean() }).parse(input).enabled;
-          return { enabled, override: enabled, globalEnabled: true };
-        },
-      },
-    });
-  }
-  const touch = { pointerType: "touch", pointerId: 1, isPrimary: true };
 
   // On a phone the host collapses the composer, unmounting this switch, as soon
   // as the editor loses focus — before iOS gets around to delivering the click.
   it("toggles on a touch tap without taking focus from the editor", async () => {
-    const slot = flippableSwitch();
-    const control = await q(slot).findByRole("switch") as HTMLButtonElement;
+    const slot = flippableSwitch("t-tap");
+    const control = await q(slot).findByRole("switch");
 
     // A cancelled pointerdown or mousedown is what leaves focus in the editor.
     expect(fireEvent.pointerDown(control, touch)).toBe(false);
     expect(fireEvent.mouseDown(control)).toBe(false);
     fireEvent.pointerUp(control, touch);
-    await waitFor(() => expect(control.getAttribute("aria-checked")).toBe("false"));
-    await waitFor(() => expect(control.disabled).toBe(false));
+    await waitFor(() => expect(control.getAttribute("aria-busy")).toBe("false"));
+    expect(control.getAttribute("aria-checked")).toBe("false");
 
     // The click the browser synthesizes after the tap must not flip it back.
     fireEvent.click(control, { detail: 1 });
-    expect(
-      slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle"),
-    ).toEqual([
-      { method: "setThreadToggle", input: { threadId: "t1", enabled: false } },
+    expect(toggleWrites(slot)).toEqual([
+      { method: "setThreadToggle", input: { threadId: "t-tap", enabled: false } },
     ]);
   });
 
-  it("ignores a touch that drags off the switch but not a later mouse click", async () => {
-    const slot = flippableSwitch();
-    const control = await q(slot).findByRole("switch") as HTMLButtonElement;
+  it("counts a tap that lifts just outside the switch", async () => {
+    const slot = flippableSwitch("t-edge");
+    const control = await q(slot).findByRole("switch");
+
+    fireEvent.pointerDown(control, touch);
+    fireEvent.pointerUp(control, { ...touch, clientX: 6 });
+    await waitFor(() => expect(toggleWrites(slot)).toHaveLength(1));
+  });
+
+  it("does not treat a dragged touch as a tap, and leaves it to the browser's click", async () => {
+    const slot = flippableSwitch("t-drag");
+    const control = await q(slot).findByRole("switch");
 
     fireEvent.pointerDown(control, touch);
     fireEvent.pointerMove(control, { ...touch, clientX: 40 });
     fireEvent.pointerUp(control, { ...touch, clientX: 40 });
-    fireEvent.click(control, { detail: 1 });
-    expect(slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle"))
-      .toEqual([]);
+    expect(toggleWrites(slot)).toEqual([]);
 
-    fireEvent.pointerDown(control, { pointerType: "mouse", pointerId: 2, isPrimary: true });
+    // Browsers send no click for a real drag; if one does arrive, it decided.
     fireEvent.click(control, { detail: 1 });
-    await waitFor(() => expect(control.getAttribute("aria-checked")).toBe("false"));
+    await waitFor(() => expect(toggleWrites(slot)).toHaveLength(1));
+  });
+
+  it("counts every tap and ends on the last one once writes settle", async () => {
+    let enabled = true;
+    const finishes: (() => void)[] = [];
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: threadComposer("t-rapid"),
+      rpc: {
+        threadToggle: () => ({ enabled, override: enabled, globalEnabled: true }),
+        setThreadToggle: async (input) => {
+          await new Promise<void>((resolve) => finishes.push(resolve));
+          enabled = z.object({ enabled: z.boolean() }).parse(input).enabled;
+          return { enabled, override: enabled, globalEnabled: true };
+        },
+      },
+    });
+    const control = await q(slot).findByRole("switch");
+
+    fireEvent.click(control);
+    expect(control.getAttribute("aria-checked")).toBe("false");
+    // A second tap while the first write is out still flips the switch...
+    fireEvent.click(control);
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    // ...but writes go out one at a time.
+    expect(toggleWrites(slot)).toHaveLength(1);
+
+    await act(async () => { finishes[0]!(); });
+    await waitFor(() => expect(toggleWrites(slot)).toHaveLength(2));
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { finishes[1]!(); });
+    await waitFor(() => expect(control.getAttribute("aria-busy")).toBe("false"));
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    expect(
+      toggleWrites(slot).map((call) => z.object({ enabled: z.boolean() }).parse(call.input).enabled),
+    ).toEqual([false, true]);
+  });
+
+  it("shows the last known state at once when the composer reopens", async () => {
+    const first = flippableSwitch("t-reopen");
+    fireEvent.click(await q(first).findByRole("switch"));
+    await waitFor(() => expect(q(first).getByRole("switch").getAttribute("aria-busy")).toBe("false"));
+    first.lifecycle.unmount();
+
+    // The host remounts composer actions on every expand; the refetch may be slow.
+    const reopened = renderSlot(toggleSlot, {}, {
+      composer: threadComposer("t-reopen"),
+      rpc: { threadToggle: () => new Promise(() => {}) },
+    });
+    expect(q(reopened).getByRole("switch").getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("ignores a refetch that lands after a newer write", async () => {
+    let calls = 0;
+    let finishStale: ((value: { enabled: boolean; override: boolean; globalEnabled: boolean }) => void) | undefined;
+    const slot = renderSlot(toggleSlot, {}, {
+      composer: threadComposer("t-stale"),
+      rpc: {
+        threadToggle: () => {
+          calls += 1;
+          if (calls === 1) return { enabled: true, override: true, globalEnabled: true };
+          return new Promise((resolve) => { finishStale = resolve; });
+        },
+        setThreadToggle: () => ({ enabled: false, override: false, globalEnabled: true }),
+      },
+    });
+    const control = await q(slot).findByRole("switch");
+
+    await slot.behavior.emitRealtime("thread-changed", { threadId: "t-stale" });
+    fireEvent.click(control);
+    await waitFor(() => expect(control.getAttribute("aria-busy")).toBe("false"));
+    await act(async () => { finishStale!({ enabled: true, override: true, globalEnabled: true }); });
+    expect(control.getAttribute("aria-checked")).toBe("false");
   });
 
   it("snaps back instead of claiming a switch the server rejected", async () => {
     const slot = renderSlot(toggleSlot, {}, {
-      composer: threadComposer,
+      composer: threadComposer("t-reject"),
       rpc: {
         threadToggle: () => ({
           enabled: true,
@@ -219,7 +305,7 @@ describe("advisor thread switch", () => {
 
   it("names what it does on hover without waiting for the native tooltip", async () => {
     const slot = renderSlot(toggleSlot, {}, {
-      composer: threadComposer,
+      composer: threadComposer("t-hint"),
       rpc: {
         threadToggle: () => ({
           enabled: true,
@@ -267,35 +353,10 @@ describe("advisor thread switch", () => {
     expect(slot.inspection.rpcCalls).toEqual([]);
   });
 
-  it("ignores another click until the server confirms a toggle", async () => {
-    let enabled = true;
-    let finish: (() => void) | undefined;
-    const slot = renderSlot(toggleSlot, {}, {
-      composer: threadComposer,
-      rpc: {
-        threadToggle: () => ({ enabled, override: enabled, globalEnabled: true }),
-        setThreadToggle: async (input) => {
-          await new Promise<void>((resolve) => { finish = resolve; });
-          enabled = z.object({ enabled: z.boolean() }).parse(input).enabled;
-          return { enabled, override: enabled, globalEnabled: true };
-        },
-      },
-    });
-    const control = await q(slot).findByRole("switch") as HTMLButtonElement;
-    fireEvent.click(control);
-    expect(control.disabled).toBe(true);
-    fireEvent.click(control);
-    expect(slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle"))
-      .toHaveLength(1);
-    await act(async () => { finish!(); });
-    await waitFor(() => expect(control.disabled).toBe(false));
-    expect(control.getAttribute("aria-checked")).toBe("false");
-  });
-
   it("reloads a following thread when the global default changes", async () => {
     let enabled = true;
     const slot = renderSlot(toggleSlot, {}, {
-      composer: threadComposer,
+      composer: threadComposer("t-follow"),
       rpc: { threadToggle: () => ({ enabled, override: null, globalEnabled: enabled }) },
     });
     expect((await q(slot).findByRole("switch")).getAttribute("aria-checked")).toBe("true");
