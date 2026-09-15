@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+- Make the Advisor switch respond to taps on iPhone and in the iOS home-screen app. Tapping it with the keyboard open used to dismiss the keyboard and minimize the composer without changing the switch.
+- Keep focus in the editor when the switch or its retry button is pressed, so the keyboard stays open and the switch stays in view after it changes.
+
 ## 0.1.2
 
 - Bound model discovery calls to five seconds and keep healthy provider results when another provider fails or stalls.
