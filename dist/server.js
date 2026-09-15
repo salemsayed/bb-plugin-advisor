@@ -13883,6 +13883,7 @@ function formatTimelineRows(rows, maxCharacters) {
 // server.ts
 var PLUGIN_ID = "advisor";
 var ADVISOR_TOOL = "advisor_review";
+var ADVISOR_POLICY = `Advisor policy: for substantial coding, debugging, refactoring, or configuration work, you MUST call ${ADVISOR_TOOL} exactly once after your implementation and checks, before your final answer. If it reports a concern or blocker, correct the work and re-verify before completing. Do not call it for greetings or simple factual conversation.`;
 var ADVISOR_TITLE_PREFIX = "Advisor \xB7 ";
 var MODEL_DISCOVERY_TIMEOUT_MS = 5e3;
 var ADVISOR_PERMISSION_MODE_PREFERENCE = [
@@ -14243,6 +14244,22 @@ function formatOutcome(outcome) {
   if (outcome.kind === "reviewed") return formatReview(rowToReview(outcome.row));
   return `Advisor unavailable: ${outcome.reason}. No review was performed, so this is NOT an approval \u2014 say plainly that the advisor did not run instead of claiming the work was reviewed.`;
 }
+function turnBriefing(tellPolicy, findings) {
+  const parts = [];
+  if (tellPolicy) {
+    parts.push(
+      `Advisor was switched on for this thread after your session started. ${ADVISOR_POLICY} If ${ADVISOR_TOOL} is not among your tools yet, finish normally: Advisor still reviews each completed turn.`
+    );
+  }
+  if (findings.length > 0) {
+    parts.push(
+      `A late independent review queue from previous turns contains:
+${findings.map(formatReview).join("\n\n")}
+Address every finding above before proceeding.`
+    );
+  }
+  return parts.join("\n\n");
+}
 function describeError(error48) {
   if (!(error48 instanceof Error)) return String(error48);
   if (!("body" in error48)) return String(error48);
@@ -14367,7 +14384,9 @@ async function plugin(bb) {
   });
   let currentSettings = parseRuntimeSettings(await settings.get());
   settings.onChange((next) => {
+    const wasEnabled = currentSettings.enabled;
     currentSettings = parseRuntimeSettings(next);
+    if (!wasEnabled && currentSettings.enabled) recordGlobalSwitchOn();
     bb.realtime.publish("advisor-settings-changed", {});
   });
   const db = bb.storage.database();
@@ -14476,7 +14495,21 @@ async function plugin(bb) {
       enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
       updated_at INTEGER NOT NULL
     )`,
-    `DROP TABLE IF EXISTS advisor_new_thread_default`
+    `DROP TABLE IF EXISTS advisor_new_thread_default`,
+    // bb fixes a provider session's instructions when it builds the session,
+    // so Advisor switched on mid-session never reaches the agent through them.
+    // `told_at` is when the thread's agent last received the policy (its session
+    // started with Advisor on, or a turn was briefed), `switched_on_at` when a
+    // thread change last turned Advisor on.
+    `CREATE TABLE IF NOT EXISTS advisor_agent_briefings (
+      primary_thread_id TEXT PRIMARY KEY,
+      told_at INTEGER,
+      switched_on_at INTEGER
+    )`,
+    `CREATE TABLE IF NOT EXISTS advisor_global_switch (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      switched_on_at INTEGER NOT NULL
+    )`
   ]);
   const primaryContexts = /* @__PURE__ */ new Map();
   const inFlight = /* @__PURE__ */ new Map();
@@ -14513,18 +14546,61 @@ async function plugin(bb) {
     return parsed.success ? parsed.data.enabled === 1 : null;
   }
   function writeThreadOverride(primaryThreadId, enabled) {
+    const wasEnabled = advisorEnabledFor(primaryThreadId);
     if (enabled === null) {
       db.prepare(
         `DELETE FROM advisor_thread_settings WHERE primary_thread_id = ?`
       ).run(primaryThreadId);
-      return;
+    } else {
+      db.prepare(
+        `INSERT INTO advisor_thread_settings (primary_thread_id, enabled, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(primary_thread_id) DO UPDATE
+           SET enabled = excluded.enabled, updated_at = excluded.updated_at`
+      ).run(primaryThreadId, enabled ? 1 : 0, Date.now());
     }
+    if (!wasEnabled && advisorEnabledFor(primaryThreadId)) {
+      db.prepare(
+        `INSERT INTO advisor_agent_briefings (primary_thread_id, switched_on_at)
+         VALUES (?, ?)
+         ON CONFLICT(primary_thread_id) DO UPDATE
+           SET switched_on_at = excluded.switched_on_at`
+      ).run(primaryThreadId, Date.now());
+    }
+  }
+  function recordGlobalSwitchOn() {
     db.prepare(
-      `INSERT INTO advisor_thread_settings (primary_thread_id, enabled, updated_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(primary_thread_id) DO UPDATE
-         SET enabled = excluded.enabled, updated_at = excluded.updated_at`
-    ).run(primaryThreadId, enabled ? 1 : 0, Date.now());
+      `INSERT INTO advisor_global_switch (id, switched_on_at) VALUES (1, ?)
+       ON CONFLICT(id) DO UPDATE SET switched_on_at = excluded.switched_on_at`
+    ).run(Date.now());
+  }
+  function recordPolicyTold(primaryThreadId) {
+    db.prepare(
+      `INSERT INTO advisor_agent_briefings (primary_thread_id, told_at)
+       VALUES (?, ?)
+       ON CONFLICT(primary_thread_id) DO UPDATE SET told_at = excluded.told_at`
+    ).run(primaryThreadId, Date.now());
+  }
+  const briefingRowSchema = external_exports.object({
+    told_at: external_exports.number().nullable(),
+    switched_on_at: external_exports.number().nullable()
+  });
+  function policyBriefingDue(primaryThreadId) {
+    const parsed = briefingRowSchema.safeParse(
+      db.prepare(
+        `SELECT told_at, switched_on_at FROM advisor_agent_briefings
+           WHERE primary_thread_id = ?`
+      ).get(primaryThreadId)
+    );
+    const row = parsed.success ? parsed.data : null;
+    const global = external_exports.object({ switched_on_at: external_exports.number() }).safeParse(
+      db.prepare(`SELECT switched_on_at FROM advisor_global_switch WHERE id = 1`).get()
+    );
+    const switchedOnAt = Math.max(
+      row?.switched_on_at ?? 0,
+      readThreadOverride(primaryThreadId) === null && global.success ? global.data.switched_on_at : 0
+    );
+    return switchedOnAt > (row?.told_at ?? 0);
   }
   function advisorEnabledFor(primaryThreadId) {
     return readThreadOverride(primaryThreadId) ?? currentSettings.enabled;
@@ -14629,18 +14705,6 @@ async function plugin(bb) {
        WHERE id = ? AND delivered_at IS NULL`
     ).run(Date.now(), rowId);
     if (sent) markSent(rowId);
-  }
-  function consumePending(primaryThreadId) {
-    const rows = readPendingAdvice(primaryThreadId).slice(
-      0,
-      MAX_PENDING_ADVICE_PER_TURN
-    );
-    if (rows.length === 0) return [];
-    db.transaction(() => {
-      for (const row of rows) markReviewDelivered(row.id, true);
-    })();
-    publishThreadChanged(primaryThreadId);
-    return rows;
   }
   function rememberContext(context) {
     primaryContexts.set(context.thread.id, {
@@ -15229,18 +15293,22 @@ Address this now. Inspect the current state, make the correction, verify it, the
       return { tools: [], skills: [] };
     }
     rememberContext(context);
-    const pending = consumePending(context.thread.id);
-    const carriedAdvice = pending.length > 0 ? `
-
-A late independent review queue from previous turns contains:
-${pending.map((row) => formatReview(rowToReview(row))).join("\n\n")}
-Address every finding above before proceeding.` : "";
-    return {
-      tools: [ADVISOR_TOOL],
-      skills: [],
-      instructions: `Advisor policy: for substantial coding, debugging, refactoring, or configuration work, you MUST call ${ADVISOR_TOOL} exactly once after your implementation and checks, before your final answer. If it reports a concern or blocker, correct the work and re-verify before completing. Do not call it for greetings or simple factual conversation.${carriedAdvice}`
-    };
+    return { tools: [ADVISOR_TOOL], skills: [], instructions: ADVISOR_POLICY };
   });
+  try {
+    bb.experimental_hooks.on("message.dispatch", (context) => {
+      try {
+        if (context.thread.status === "pending" && context.thread.originPluginId === null && advisorEnabledFor(context.thread.id)) {
+          recordPolicyTold(context.thread.id);
+        }
+      } catch (error48) {
+        bb.log.warn(`Advisor could not record the session start of ${context.thread.id}: ${describeError(error48)}`);
+      }
+      return { action: "proceed" };
+    });
+  } catch (error48) {
+    bb.log.warn(`Advisor cannot see session starts on this bb: ${describeError(error48)}`);
+  }
   async function resolvePrimaryContext(primaryThreadId) {
     const cached2 = primaryContexts.get(primaryThreadId);
     if (cached2) return cached2;
@@ -15745,6 +15813,41 @@ Address every finding above before proceeding.` : "";
     recordIncident(primaryThreadId, sourceSeq, reason);
     return true;
   }
+  const briefingThreads = /* @__PURE__ */ new Set();
+  bb.events.on("thread.active", async ({ thread }) => {
+    if (thread.originPluginId !== null || thread.visibility === "hidden" || briefingThreads.has(thread.id) || !advisorEnabledFor(thread.id)) {
+      return;
+    }
+    const tellPolicy = policyBriefingDue(thread.id);
+    const findings = readPendingAdvice(thread.id).slice(0, MAX_PENDING_ADVICE_PER_TURN);
+    if (!tellPolicy && findings.length === 0) return;
+    briefingThreads.add(thread.id);
+    try {
+      const current = await bb.sdk.threads.get({ threadId: thread.id });
+      if (current.status !== "active") return;
+      await bb.sdk.threads.send({
+        threadId: thread.id,
+        mode: "steer",
+        input: [
+          {
+            type: "text",
+            visibility: "agent-only",
+            text: turnBriefing(tellPolicy, findings.map(rowToReview)),
+            mentions: []
+          }
+        ]
+      });
+      db.transaction(() => {
+        for (const row of findings) markReviewDelivered(row.id, true);
+        if (tellPolicy) recordPolicyTold(thread.id);
+      })();
+      if (findings.length > 0) publishThreadChanged(thread.id);
+    } catch (error48) {
+      bb.log.warn(`Advisor could not brief the running turn of ${thread.id}: ${describeError(error48)}`);
+    } finally {
+      briefingThreads.delete(thread.id);
+    }
+  });
   bb.events.on("thread.idle", async ({ thread, lastAssistantText }) => {
     const toolReviewed = toolReviewedThreads.delete(thread.id);
     if (waitingForCompletion.has(thread.id)) {
@@ -15810,6 +15913,9 @@ Address every finding above before proceeding.` : "";
       );
       db.prepare(
         `DELETE FROM advisor_thread_settings WHERE primary_thread_id = ?`
+      ).run(thread.id);
+      db.prepare(
+        `DELETE FROM advisor_agent_briefings WHERE primary_thread_id = ?`
       ).run(thread.id);
     }
     if (advisorThreadId) {

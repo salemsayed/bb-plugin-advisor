@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
+  makeMessageDispatchHookContext,
   makePluginAgentConfigurationContext,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
@@ -35,6 +36,17 @@ const primaryContext = makePluginAgentConfigurationContext({
   origin: { kind: null, pluginId: null },
 });
 
+async function idleThread({ threadId }: { threadId: string }) {
+  return makeThreadResponse({
+    id: threadId,
+    projectId: "project-test",
+    environmentId: "environment-test",
+    providerId: "codex",
+    title: threadId === "thread-primary" ? "Implement feature" : "Advisor",
+    status: "idle",
+  });
+}
+
 function timeline(maxSeq: number) {
   return {
     rows: [{ kind: "conversation", role: "assistant", text: "Implemented it." }],
@@ -65,15 +77,7 @@ async function loadAdvisor(
     sdk: {
       threads: {
         timeline: async () => timeline(timelineSeq),
-        get: async ({ threadId }: { threadId: string }) =>
-          makeThreadResponse({
-            id: threadId,
-            projectId: "project-test",
-            environmentId: "environment-test",
-            providerId: "codex",
-            title: threadId === "thread-primary" ? "Implement feature" : "Advisor",
-            status: "idle",
-          }),
+        get: idleThread,
         spawn,
         wait: async () => ({ matched: true }),
         output: async () => ({ output: currentOutput }),
@@ -107,6 +111,48 @@ async function loadAutoAdvisor(output: string) {
   const host = await loadAdvisor(output);
   await host.harness.setSettings({ autoReview: true });
   return host;
+}
+
+type AdvisorHarness = Awaited<ReturnType<typeof loadAdvisor>>["harness"];
+
+function steers(harness: AdvisorHarness, threadId: string) {
+  return harness.sdk.callsTo("threads.send").flatMap(([call]) => {
+    const send = call as {
+      threadId: string;
+      mode: string;
+      input: { text: string; visibility?: string }[];
+    };
+    return send.threadId === threadId && send.mode === "steer" ? [send] : [];
+  });
+}
+
+/**
+ * Start a turn the way bb does: the session's configuration resolves, then the
+ * thread goes active. Returns what Advisor steered into that turn, or null.
+ */
+async function startTurn(
+  harness: AdvisorHarness,
+  threadId = "thread-primary",
+): Promise<string | null> {
+  const before = steers(harness, threadId).length;
+  const thread = makeThreadResponse({
+    id: threadId,
+    projectId: "project-test",
+    environmentId: "environment-test",
+    providerId: "codex",
+    visibility: "visible",
+    status: "active",
+  });
+  harness.sdk.stub("threads.get", async () => thread);
+  await harness.resolveAgentConfiguration({
+    ...primaryContext,
+    thread: { ...primaryContext.thread, id: threadId },
+  });
+  const { errors } = await harness.emitThreadEvent("thread.active", { thread });
+  harness.sdk.stub("threads.get", idleThread);
+  expect(errors).toEqual([]);
+  const sent = steers(harness, threadId);
+  return sent.length > before ? sent[sent.length - 1]!.input[0]!.text : null;
 }
 
 describe("advisor agent configuration", () => {
@@ -660,12 +706,14 @@ END_ADVISOR_RESULT`);
       lastAssistantText: "Everything passes.",
     });
 
-    const nextTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(nextTurn.instructions).toContain("late independent review");
-    expect(nextTurn.instructions).toContain("The claimed test did not run");
+    const nextTurn = await startTurn(harness);
+    expect(nextTurn).toContain("late independent review");
+    expect(nextTurn).toContain("The claimed test did not run");
+    // A running session ignores changed instructions, so they never carry it.
+    expect((await harness.resolveAgentConfiguration(primaryContext)).instructions)
+      .not.toContain("late independent review");
 
-    const followingTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(followingTurn.instructions).not.toContain("late independent review");
+    expect(await startTurn(harness)).toBeNull();
   });
 
   it("does not review hidden worker threads", async () => {
@@ -1039,9 +1087,9 @@ END_ADVISOR_RESULT`;
     );
     await idle("Second turn.");
 
-    const nextTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(nextTurn.instructions).toContain("First queued finding");
-    expect(nextTurn.instructions).toContain("Second queued finding");
+    const nextTurn = await startTurn(harness);
+    expect(nextTurn).toContain("First queued finding");
+    expect(nextTurn).toContain("Second queued finding");
 
     const panel = (await harness.callRpc("threadReviews", {
       threadId: "thread-primary",
@@ -1052,8 +1100,7 @@ END_ADVISOR_RESULT`;
         .map((review) => review.sentAt),
     ).toEqual([expect.any(Number), expect.any(Number)]);
 
-    const followingTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(followingTurn.instructions).not.toContain("queued finding");
+    expect(await startTurn(harness)).toBeNull();
   });
 
   it("does not bulk-retire an older finding when a tool review returns another", async () => {
@@ -1084,8 +1131,120 @@ END_ADVISOR_RESULT`;
       threadId: "thread-primary",
     })) as { advice: { summary: string } | null };
     expect(pending.advice?.summary).toBe("Older queued finding");
-    const nextTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(nextTurn.instructions).toContain("Older queued finding");
+    expect(await startTurn(harness)).toContain("Older queued finding");
+  });
+});
+
+describe("turn briefing", () => {
+  const PASS_OUTPUT = `ADVISOR_RESULT
+severity: pass
+summary: Looks correct
+details:
+none
+END_ADVISOR_RESULT`;
+
+  async function postTurnFinding() {
+    const host = await loadAutoAdvisor(BLOCKER_OUTPUT);
+    await host.harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({ id: "thread-primary", visibility: "visible" }),
+      lastAssistantText: "Everything passes.",
+    });
+    return host;
+  }
+
+  function firstMessage(harness: AdvisorHarness, threadId: string) {
+    const dispatch = harness.registrations.hooks["message.dispatch"];
+    expect(dispatch).not.toBeNull();
+    return dispatch!(makeMessageDispatchHookContext({
+      thread: { id: threadId, status: "pending", originPluginId: null },
+      attempt: "start-turn",
+    }));
+  }
+
+  it("briefs a running session once after Advisor is switched on for its thread", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+    await harness.setSettings({ enabled: false });
+    expect(await startTurn(harness)).toBeNull();
+
+    await harness.callRpc("setThreadToggle", { threadId: "thread-primary", enabled: true });
+    const briefing = await startTurn(harness);
+    expect(briefing).toContain("switched on for this thread");
+    expect(briefing).toContain("MUST call advisor_review");
+    expect(steers(harness, "thread-primary").at(-1)?.input[0]?.visibility).toBe("agent-only");
+
+    expect(await startTurn(harness)).toBeNull();
+  });
+
+  it("briefs threads that follow the default when the default is switched on", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+    await harness.setSettings({ enabled: false });
+    await harness.setSettings({ enabled: true });
+
+    expect(await startTurn(harness, "thread-other")).toContain("switched on for this thread");
+  });
+
+  it("does not brief a session that started with Advisor on", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+    await harness.setSettings({ enabled: false });
+    await harness.callRpc("setThreadToggle", { threadId: "thread-new", enabled: true });
+
+    // Its first message builds the session with the policy already in place.
+    expect(await firstMessage(harness, "thread-new")).toEqual({ action: "proceed" });
+    expect(await startTurn(harness, "thread-new")).toBeNull();
+  });
+
+  it("sends nothing to a thread whose Advisor is off", async () => {
+    const { harness } = await postTurnFinding();
+    await harness.callRpc("setThreadToggle", { threadId: "thread-primary", enabled: false });
+
+    expect(await startTurn(harness)).toBeNull();
+    const pending = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: unknown };
+    expect(pending.advice).not.toBeNull();
+  });
+
+  it("keeps findings queued when the turn is over before the briefing goes out", async () => {
+    const { harness } = await postTurnFinding();
+
+    // A steer to an idle thread would start a turn of its own.
+    await harness.emitThreadEvent("thread.active", {
+      thread: makeThreadResponse({ id: "thread-primary", visibility: "visible", status: "active" }),
+    });
+    expect(steers(harness, "thread-primary")).toEqual([]);
+    expect(await startTurn(harness)).toContain("The claimed test did not run");
+  });
+
+  it("keeps findings unsent when the briefing fails to reach the agent", async () => {
+    const { harness } = await postTurnFinding();
+    harness.sdk.stub("threads.send", async () => {
+      throw new Error("host offline");
+    });
+    await startTurn(harness);
+
+    const panel = (await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as { reviews: { sentAt: number | null }[] };
+    expect(panel.reviews[0]?.sentAt).toBeNull();
+    const pending = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: unknown };
+    expect(pending.advice).not.toBeNull();
+  });
+
+  it("leaves hidden and plugin-owned threads alone", async () => {
+    const { harness } = await loadAdvisor(PASS_OUTPUT);
+    await harness.setSettings({ enabled: false });
+    await harness.setSettings({ enabled: true });
+
+    for (const thread of [
+      makeThreadResponse({ id: "thread-hidden", visibility: "hidden", status: "active" }),
+      makeThreadResponse({ id: "thread-worker", originPluginId: "workflows", status: "active" }),
+    ]) {
+      harness.sdk.stub("threads.get", async () => thread);
+      await harness.emitThreadEvent("thread.active", { thread });
+      expect(steers(harness, thread.id)).toEqual([]);
+    }
   });
 });
 
@@ -1383,8 +1542,7 @@ describe("advisor unavailability", () => {
     );
     expect(result).toContain("Advisor unavailable");
 
-    const nextTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(nextTurn.instructions).toContain("The claimed test did not run");
+    expect(await startTurn(harness)).toContain("The claimed test did not run");
   });
 });
 
@@ -1641,8 +1799,7 @@ END_ADVISOR_RESULT`;
     expect(after.advice).toBeNull();
 
     // Dismissing must retire the advice, not defer it to the next turn.
-    const nextTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(nextTurn.instructions).not.toContain("late independent review");
+    expect(await startTurn(harness)).toBeNull();
   });
 
   it("resolves a chain, removes it from the badge, and clears pending advice", async () => {
@@ -1687,8 +1844,7 @@ END_ADVISOR_RESULT`;
       "The advisor misread the test output.",
     );
 
-    const nextTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(nextTurn.instructions).not.toContain("late independent review");
+    expect(await startTurn(harness)).toBeNull();
   });
 
   it("records what the user decided, and reopening clears every trace", async () => {
@@ -1758,7 +1914,7 @@ END_ADVISOR_RESULT`;
     // Found but not yet handed over: the bulk pending sweep must not claim it.
     expect(queued.reviews[0]?.sentAt).toBeNull();
 
-    await harness.resolveAgentConfiguration(primaryContext);
+    await startTurn(harness);
     const sent = (await harness.callRpc("threadReviews", {
       threadId: "thread-primary",
     })) as { reviews: { sentAt: number | null }[] };
@@ -1894,9 +2050,7 @@ END_ADVISOR_RESULT`);
     expect(panel.reviews[0]?.resolvedAt).toEqual(expect.any(Number));
     expect(badge.open).toBeNull();
     expect(pending.advice).toBeNull();
-    expect(
-      (await harness.resolveAgentConfiguration(primaryContext)).instructions,
-    ).not.toContain("late independent review");
+    expect(await startTurn(harness)).toBeNull();
   });
 
   it("reopens a resolved chain", async () => {
@@ -2177,8 +2331,7 @@ END_ADVISOR_RESULT`);
     })) as { advice: unknown };
     expect(still.advice).not.toBeNull();
 
-    const nextTurn = await harness.resolveAgentConfiguration(primaryContext);
-    expect(nextTurn.instructions).toContain("The claimed test did not run");
+    expect(await startTurn(harness)).toContain("The claimed test did not run");
   });
 
   it("records an incident when the transcript cannot be read", async () => {

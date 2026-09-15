@@ -60,9 +60,8 @@ Advisor reviews a thread through three complementary paths:
    and returns concrete findings the agent must address before completing.
 2. **Post-turn review** — after a primary thread goes idle with a completed
    public answer, the reviewer checks that answer and the work it claims.
-   Actionable late findings are injected into the next turn's dynamic
-   instructions. A turn that already ran the tool is not reviewed again after
-   it goes idle.
+   Actionable late findings are sent to the agent when its next turn starts.
+   A turn that already ran the tool is not reviewed again after it goes idle.
 3. **Review now** — the thread panel can start the same review on demand. If
    the agent is still working, Advisor waits for the completed public answer
    instead of treating the missing answer as a finding.
@@ -73,11 +72,12 @@ turn: **Waiting for completed turn**, **Review pending**, **Approved**,
 
 A late finding stays attached to the completed turn and offers **Fix in new
 turn**, which starts an agent-only corrective follow-up with the finding
-already in context. Unresolved findings are also injected when the user sends
-the next message. When more than one finding is queued, Advisor carries the
-whole bounded queue into that turn — delivering one finding never silently
-consumes its siblings. Advice older than 24 hours is retired rather than
-injected stale.
+already in context. Unresolved findings are also sent into the turn your next
+message starts, as an agent-only Advisor message. If that turn finishes before
+the agent reads the message, the agent picks it up in a short follow-up turn.
+When more than one finding is queued, Advisor carries the whole bounded queue
+into that turn — delivering one finding never silently consumes its siblings.
+Advice older than 24 hours is retired rather than sent stale.
 
 ## Install
 
@@ -119,18 +119,28 @@ composer. A thread's choice overrides **Enable advisor** in either direction:
 you can turn one thread off while the default is on, or turn one thread on
 while the default is off. New threads follow the global setting.
 
-Switching a thread off stops automatic reviews, advice injection, and automatic
+Switching a thread off stops automatic reviews, advice delivery, and automatic
 corrective turns, including a correction from a review already in progress.
 **Review now** and **Fix in new turn** remain available when explicitly requested.
 An agent session that still has the review tool receives an explicit skipped
 review response when it calls the tool while the thread is off.
 
-On BB 0.43.1, a Codex session started with Advisor off keeps its original tool
-list when resumed. Switching Advisor on enables post-turn reviews immediately,
-but the `advisor_review` tool needs a fresh model session; stopping and resuming
-the same session is not enough. **Review now** works immediately in the Advisor
-panel. Clearing model context starts a fresh session, but also resets the
-agent's working context.
+BB fixes an agent session's tools and instructions when it builds that session,
+so switching Advisor on in an existing thread takes effect in stages:
+
+- Post-turn reviews start with the next completed turn.
+- The next turn you start receives a one-time Advisor message with the policy,
+  because the session's own instructions cannot change. If that turn finishes
+  before the agent reads it, the agent acknowledges it in a short follow-up
+  turn.
+- The `advisor_review` tool reaches the agent only once BB rebuilds its session.
+  A Claude Code thread picks it up after its runtime restarts; a Codex session
+  keeps its original tool list even when resumed.
+
+**Review now** works immediately in the Advisor panel. Clearing model context
+starts a fresh session with the tool and instructions in place, but also resets
+the agent's working context. (Verified with Claude Code on BB 0.43.2 and Codex
+on BB 0.43.1.)
 
 The same controls are available from the CLI. Omit the thread id when running
 inside that thread. Use `follow` to clear its override and track the global
@@ -202,8 +212,8 @@ Every finding carries its own lifecycle, shown in the thread panel:
 
 - **Queued** — found, but its text has not reached the primary agent yet.
 - **Sent to the agent** — set at the two moments the finding is actually
-  handed over: the tool result, and injection into the next turn's
-  instructions. *Sent is not resolved* — it only means the agent has seen the
+  handed over: the tool result, and the Advisor message sent into the next
+  turn. *Sent is not resolved* — it only means the agent has seen the
   text.
 - **Re-raised N×** — the advisor flagged it again, so it demonstrably was not
   addressed.
