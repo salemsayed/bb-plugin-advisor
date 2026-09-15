@@ -433,6 +433,69 @@ function badgeStanding(
   };
 }
 
+/** Finger travel beyond which a touch is a scroll or drag rather than a tap. */
+const TAP_SLOP_PX = 10;
+
+function travel(start: { x: number; y: number }, event: React.PointerEvent) {
+  return Math.hypot(event.clientX - start.x, event.clientY - start.y);
+}
+
+/**
+ * Press handling for a button in the composer's action row. On a phone the host
+ * only renders plugin actions while the composer is expanded, and collapses it
+ * once the editor loses focus: a tap that moves focus dismisses the keyboard
+ * and unmounts the button before iOS delivers the click. So a press never takes
+ * focus, and a touch acts on `pointerup` like the host's own submit button,
+ * dropping the click that trails it. Keyboard activation clicks with `detail`
+ * 0 and still acts.
+ */
+function useComposerActionPress(onPress: () => void) {
+  const tap = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const touchPress = useRef(false);
+
+  return {
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+      tap.current = null;
+      touchPress.current = event.pointerType === "touch";
+      if (!touchPress.current || !event.isPrimary || event.button !== 0) return;
+      event.preventDefault();
+      tap.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+    },
+    onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => {
+      const start = tap.current;
+      if (start?.pointerId === event.pointerId && travel(start, event) > TAP_SLOP_PX) {
+        tap.current = null;
+      }
+    },
+    onPointerCancel: () => {
+      // The browser took the gesture, usually to scroll; no click follows.
+      tap.current = null;
+      touchPress.current = false;
+    },
+    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => {
+      const start = tap.current;
+      tap.current = null;
+      if (start?.pointerId !== event.pointerId) return;
+      const box = event.currentTarget.getBoundingClientRect();
+      const inside =
+        event.clientX >= box.left &&
+        event.clientX <= box.right &&
+        event.clientY >= box.top &&
+        event.clientY <= box.bottom;
+      if (inside && travel(start, event) <= TAP_SLOP_PX) onPress();
+    },
+    onMouseDown: (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+    },
+    onClick: (event: React.MouseEvent<HTMLButtonElement>) => {
+      const afterTouch = touchPress.current;
+      touchPress.current = false;
+      if (afterTouch && event.detail > 0) return;
+      onPress();
+    },
+  };
+}
+
 /** Keep state scoped to the thread even when the host reuses a composer. */
 function AdvisorThreadToggle() {
   const { scope } = useComposer();
@@ -469,6 +532,11 @@ function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
       setSaving(false);
     }
   }, [rpc, threadId, state, saving, reload]);
+  const togglePress = useComposerActionPress(() => void toggle());
+  const retryPress = useComposerActionPress(() => {
+    setWriteError(null);
+    void reload();
+  });
 
   const problem = writeError ?? error;
   if (problem) {
@@ -477,10 +545,7 @@ function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
         type="button"
         title={`Advisor switch unavailable (${problem}). Click to retry.`}
         aria-label="Advisor switch unavailable, click to retry"
-        onClick={() => {
-          setWriteError(null);
-          void reload();
-        }}
+        {...retryPress}
         className="inline-flex h-7 shrink-0 items-center rounded-md border border-dashed border-border px-1.5 text-subtle-foreground hover:bg-state-hover"
       >
         <SeverityGlyph standing="unavailable" className="size-3.5 shrink-0" />
@@ -503,7 +568,7 @@ function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
         aria-checked={enabled}
         aria-label={hint}
         disabled={saving}
-        onClick={() => void toggle()}
+        {...togglePress}
         className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-1.5 hover:bg-state-hover ${
           enabled
             ? "border-border text-foreground"

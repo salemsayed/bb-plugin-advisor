@@ -140,6 +140,59 @@ describe("advisor thread switch", () => {
     ]);
   });
 
+  function flippableSwitch() {
+    let enabled = true;
+    return renderSlot(toggleSlot, {}, {
+      composer: threadComposer,
+      rpc: {
+        threadToggle: () => ({ enabled, override: enabled, globalEnabled: true }),
+        setThreadToggle: (input) => {
+          enabled = z.object({ enabled: z.boolean() }).parse(input).enabled;
+          return { enabled, override: enabled, globalEnabled: true };
+        },
+      },
+    });
+  }
+  const touch = { pointerType: "touch", pointerId: 1, isPrimary: true };
+
+  // On a phone the host collapses the composer, unmounting this switch, as soon
+  // as the editor loses focus — before iOS gets around to delivering the click.
+  it("toggles on a touch tap without taking focus from the editor", async () => {
+    const slot = flippableSwitch();
+    const control = await q(slot).findByRole("switch") as HTMLButtonElement;
+
+    // A cancelled pointerdown or mousedown is what leaves focus in the editor.
+    expect(fireEvent.pointerDown(control, touch)).toBe(false);
+    expect(fireEvent.mouseDown(control)).toBe(false);
+    fireEvent.pointerUp(control, touch);
+    await waitFor(() => expect(control.getAttribute("aria-checked")).toBe("false"));
+    await waitFor(() => expect(control.disabled).toBe(false));
+
+    // The click the browser synthesizes after the tap must not flip it back.
+    fireEvent.click(control, { detail: 1 });
+    expect(
+      slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle"),
+    ).toEqual([
+      { method: "setThreadToggle", input: { threadId: "t1", enabled: false } },
+    ]);
+  });
+
+  it("ignores a touch that drags off the switch but not a later mouse click", async () => {
+    const slot = flippableSwitch();
+    const control = await q(slot).findByRole("switch") as HTMLButtonElement;
+
+    fireEvent.pointerDown(control, touch);
+    fireEvent.pointerMove(control, { ...touch, clientX: 40 });
+    fireEvent.pointerUp(control, { ...touch, clientX: 40 });
+    fireEvent.click(control, { detail: 1 });
+    expect(slot.inspection.rpcCalls.filter((call) => call.method === "setThreadToggle"))
+      .toEqual([]);
+
+    fireEvent.pointerDown(control, { pointerType: "mouse", pointerId: 2, isPrimary: true });
+    fireEvent.click(control, { detail: 1 });
+    await waitFor(() => expect(control.getAttribute("aria-checked")).toBe("false"));
+  });
+
   it("snaps back instead of claiming a switch the server rejected", async () => {
     const slot = renderSlot(toggleSlot, {}, {
       composer: threadComposer,
