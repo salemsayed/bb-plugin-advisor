@@ -1604,7 +1604,14 @@ describe("post-turn review scope", () => {
     // A second review really ran, and it is the later turn's own review — a
     // joined earlier-turn review would not be recorded as a repeat.
     expect(harness.sdk.callsTo("threads.output")).toHaveLength(2);
-    expect(await toolResult).toContain("still unresolved");
+    const result = await toolResult;
+    expect(result).toContain("Advisor blocker:");
+    // Turn one's review was still queued, so the agent was never told it.
+    expect(result).not.toContain("still unresolved");
+    const panel = (await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as { reviews: { repeatCount: number }[] };
+    expect(panel.reviews[0]?.repeatCount).toBe(2);
   });
 
   it("does not re-review a turn the advisor tool already reviewed", async () => {
@@ -1934,6 +1941,82 @@ END_ADVISOR_RESULT`;
       severity: "blocker",
       summary: "Dismissed concern",
     });
+  });
+
+  it("sends only the escalated round after rounds raised while dismissed", async () => {
+    const { harness, setTimelineSeq, setAdvisorOutput } = await loadAutoAdvisor(
+      keyedFinding("concern", "quiet-repeats", "First concern round"),
+    );
+    const idle = (text: string) =>
+      harness.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({
+          id: "thread-primary",
+          visibility: "visible",
+        }),
+        lastAssistantText: text,
+      });
+    await idle("First turn.");
+    const before = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { id: number } | null };
+    await harness.callRpc("dismissAdvice", {
+      threadId: "thread-primary",
+      adviceId: before.advice!.id,
+    });
+
+    setTimelineSeq(43);
+    setAdvisorOutput(
+      keyedFinding("concern", "quiet-repeats", "Quiet concern round"),
+    );
+    await idle("Second turn.");
+    setTimelineSeq(44);
+    setAdvisorOutput(
+      keyedFinding("blocker", "quiet-repeats", "Escalated blocker round"),
+    );
+    await idle("Third turn.");
+
+    const pending = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { summary: string; repeatCount: number; toldBefore: boolean } | null };
+    // Raised three times, but the agent never saw any of the rounds.
+    expect(pending.advice).toMatchObject({
+      summary: "Escalated blocker round",
+      repeatCount: 3,
+      toldBefore: false,
+    });
+    const briefing = await startTurn(harness);
+    expect(briefing).toContain("Escalated blocker round");
+    expect(briefing).not.toContain("Quiet concern round");
+    expect(briefing).not.toContain("First concern round");
+    expect(briefing).not.toContain("This repeats advice");
+  });
+
+  it("tells the agent a finding repeats only after an earlier round reached it", async () => {
+    const { harness, setTimelineSeq, setAdvisorOutput } = await loadAutoAdvisor(
+      keyedFinding("concern", "told-once", "Told concern"),
+    );
+    const idle = (text: string) =>
+      harness.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({
+          id: "thread-primary",
+          visibility: "visible",
+        }),
+        lastAssistantText: text,
+      });
+    await idle("First turn.");
+    const first = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { toldBefore: boolean } | null };
+    expect(first.advice?.toldBefore).toBe(false);
+    expect(await startTurn(harness)).not.toContain("This repeats advice");
+
+    setTimelineSeq(43);
+    await idle("Second turn.");
+    const repeat = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { repeatCount: number; toldBefore: boolean } | null };
+    expect(repeat.advice).toMatchObject({ repeatCount: 2, toldBefore: true });
+    expect(await startTurn(harness)).toContain("This repeats advice");
   });
 
   it("shows a dismissed chain in the panel as resolved with no decision", async () => {
