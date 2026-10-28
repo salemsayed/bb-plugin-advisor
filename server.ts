@@ -175,6 +175,8 @@ const pendingAdviceSchema = z.object({
   summary: z.string(),
   details: z.string(),
   repeatCount: z.number().int(),
+  /** An earlier round of this finding actually reached the agent. */
+  toldBefore: z.boolean(),
 });
 
 const reviewLifecycleSchema = z.enum([
@@ -371,6 +373,8 @@ const chainRootRowSchema = z.object({
   closed_at: z.number().nullable(),
   closed_seq: z.number().int().nullable(),
   decision: decisionSchema,
+  /** Set by a banner dismissal: the severity the user dismissed. */
+  dismissed_severity: severitySchema.nullable(),
   auto_continued_at: z.number().nullable(),
 });
 
@@ -540,18 +544,20 @@ type AdvisorModelResolution =
     }
   | { kind: "unavailable"; reason: string };
 
-function rowToReview(row: ReviewRow): AdvisorFinding {
+function rowToReview(row: ReviewRow, toldBefore: boolean): AdvisorFinding {
   return {
     severity: row.severity,
     key: row.finding_key,
     summary: row.summary,
     details: row.details,
-    repeatOf: row.repeat_of,
+    toldBefore,
   };
 }
 
-function formatOutcome(outcome: AdvisorOutcome): string {
-  if (outcome.kind === "reviewed") return formatReview(rowToReview(outcome.row));
+function formatOutcome(outcome: AdvisorOutcome, toldBefore: boolean): string {
+  if (outcome.kind === "reviewed") {
+    return formatReview(rowToReview(outcome.row, toldBefore));
+  }
   return `Advisor unavailable: ${outcome.reason}. No review was performed, so this is NOT an approval — say plainly that the advisor did not run instead of claiming the work was reviewed.`;
 }
 
@@ -856,6 +862,10 @@ export default async function plugin(bb: BbPluginApi) {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       switched_on_at INTEGER NOT NULL
     )`,
+    // The severity the user saw when they dismissed the finding, on the chain
+    // root. A dismissal settles the chain; the advisor raising it again at a
+    // higher severity is what reopens it.
+    `ALTER TABLE advisor_reviews ADD COLUMN dismissed_severity TEXT`,
   ]);
 
   const primaryContexts = new Map<string, PrimaryContext>();
@@ -1026,7 +1036,7 @@ export default async function plugin(bb: BbPluginApi) {
       db
         .prepare(
           `SELECT id, severity, resolved_at, resolved_reason, closed_at,
-                  closed_seq, decision, auto_continued_at
+                  closed_seq, decision, dismissed_severity, auto_continued_at
            FROM advisor_reviews
            WHERE primary_thread_id = ? AND id = ? AND repeat_of IS NULL`,
         )
@@ -1135,6 +1145,25 @@ export default async function plugin(bb: BbPluginApi) {
           ? [parsed.data]
           : [];
       });
+  }
+
+  /**
+   * Whether an earlier round of this finding actually reached the agent. The
+   * chain's length alone does not say so: rounds raised while the user had the
+   * finding dismissed are recorded without ever being sent.
+   */
+  function agentWasToldBefore(row: ReviewRow): boolean {
+    const chainId = chainKeyOf(row);
+    return Boolean(
+      db
+        .prepare(
+          `SELECT 1 FROM advisor_reviews
+           WHERE primary_thread_id = ? AND (id = ? OR repeat_of = ?)
+             AND id < ? AND sent_at IS NOT NULL
+           LIMIT 1`,
+        )
+        .get(row.primary_thread_id, chainId, chainId, row.id),
+    );
   }
 
   function markReviewDelivered(rowId: number, sent: boolean): void {
@@ -1470,7 +1499,9 @@ export default async function plugin(bb: BbPluginApi) {
             type: "text",
             visibility: "agent-only",
             text:
-              `A completed-turn Advisor review requested changes:\n${formatReview(rowToReview(review))}\n` +
+              `A completed-turn Advisor review requested changes:\n${formatReview(
+                rowToReview(review, agentWasToldBefore(review)),
+              )}\n` +
               "Address this now. Inspect the current state, make the correction, verify it, then run advisor_review before finalizing.",
             mentions: [],
           },
@@ -1643,6 +1674,7 @@ export default async function plugin(bb: BbPluginApi) {
           repeatCount: rows.filter(
             (candidate) => chainKeyOf(candidate) === chainKeyOf(row),
           ).length,
+          toldBefore: agentWasToldBefore(row),
         },
       };
     },
@@ -1675,10 +1707,27 @@ export default async function plugin(bb: BbPluginApi) {
         publishThreadChanged(threadId);
         return { ok: true, dismissed: false } as const;
       }
-      db.prepare(`UPDATE advisor_reviews SET delivered_at = ? WHERE id = ?`).run(
-        Date.now(),
-        row.id,
+      const chainId = chainKeyOf(row);
+      // readPendingAdvice excludes settled chains, so the chain's pending rows
+      // must be collected before the root below is settled.
+      const pendingInChain = readPendingAdvice(threadId).filter(
+        (candidate) => chainKeyOf(candidate) === chainId,
       );
+      // Dismissing settles the whole chain the way the panel's resolveFinding
+      // does, so readOpenFindings, readPendingAdvice, and the tool result all
+      // stop treating it as open. The panel reads a root with resolved_at set
+      // and an empty decision as "You dismissed it". The severity the user
+      // dismissed is kept on the root: the advisor raising the finding again
+      // at a higher one reopens the chain, at the same or a lower one does not.
+      db.prepare(
+        `UPDATE advisor_reviews
+         SET resolved_at = ?, resolved_reason = '', decision = '',
+             dismissed_severity = ?
+         WHERE primary_thread_id = ? AND id = ? AND repeat_of IS NULL`,
+      ).run(Date.now(), row.severity, threadId, chainId);
+      for (const pending of pendingInChain) {
+        markReviewDelivered(pending.id, false);
+      }
       publishThreadChanged(threadId);
       return { ok: true, dismissed: true } as const;
     },
@@ -1705,7 +1754,8 @@ export default async function plugin(bb: BbPluginApi) {
         if (resolved) {
           db.prepare(
             `UPDATE advisor_reviews
-             SET resolved_at = ?, resolved_reason = ?, decision = ?
+             SET resolved_at = ?, resolved_reason = ?, decision = ?,
+                 dismissed_severity = NULL
              WHERE primary_thread_id = ? AND id = ? AND repeat_of IS NULL`,
           ).run(
             Date.now(),
@@ -1720,6 +1770,7 @@ export default async function plugin(bb: BbPluginApi) {
           db.prepare(
             `UPDATE advisor_reviews
              SET resolved_at = NULL, resolved_reason = '', decision = '',
+                 dismissed_severity = NULL,
                  closed_at = NULL, closed_seq = NULL,
                  auto_continued_at = NULL
              WHERE primary_thread_id = ? AND id = ? AND repeat_of IS NULL`,
@@ -1887,7 +1938,10 @@ export default async function plugin(bb: BbPluginApi) {
         publishThreadChanged(context.threadId);
         toolReviewedThreads.add(context.threadId);
       }
-      return formatOutcome(outcome);
+      return formatOutcome(
+        outcome,
+        outcome.kind === "reviewed" && agentWasToldBefore(outcome.row),
+      );
     },
   });
 
@@ -2416,7 +2470,7 @@ export default async function plugin(bb: BbPluginApi) {
       (findingKey.length > 0
         ? matchChainRoot(
             `SELECT id, severity, resolved_at, resolved_reason, closed_at,
-                    closed_seq, decision, auto_continued_at
+                    closed_seq, decision, dismissed_severity, auto_continued_at
              FROM advisor_reviews
              WHERE primary_thread_id = ? AND finding_key = ?
              ORDER BY source_seq, id LIMIT 1`,
@@ -2430,7 +2484,7 @@ export default async function plugin(bb: BbPluginApi) {
       (normalized.length >= MIN_CHAINABLE_ADVICE_LENGTH
         ? matchChainRoot(
             `SELECT id, severity, resolved_at, resolved_reason, closed_at,
-                    closed_seq, decision, auto_continued_at
+                    closed_seq, decision, dismissed_severity, auto_continued_at
              FROM advisor_reviews
              WHERE primary_thread_id = ? AND normalized = ?
              ORDER BY source_seq, id LIMIT 1`,
@@ -2444,6 +2498,17 @@ export default async function plugin(bb: BbPluginApi) {
     const severity = root
       ? strongerSeverity(root.severity, review.severity)
       : review.severity;
+    // A banner dismissal settles a chain only at the severity the user saw.
+    const reopensDismissal =
+      root !== null &&
+      root.resolved_at !== null &&
+      root.dismissed_severity !== null &&
+      SEVERITY_RANK[review.severity] > SEVERITY_RANK[root.dismissed_severity];
+    // A round that joins a chain the user settled, and does not reopen it, is
+    // retired on arrival. Left pending, it would wait unseen and reach the
+    // agent next to the round that later reopens the chain.
+    const joinsSettledChain =
+      root !== null && root.resolved_at !== null && !reopensDismissal;
     const result = db
       .prepare(
         `INSERT INTO advisor_reviews (
@@ -2451,7 +2516,7 @@ export default async function plugin(bb: BbPluginApi) {
            normalized, created_at, delivered_at, repeat_of,
            provider_id, model, reasoning_level, advisor_thread_id,
            finding_key
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          RETURNING ${REVIEW_COLUMNS}`,
       )
       .get(
@@ -2462,6 +2527,7 @@ export default async function plugin(bb: BbPluginApi) {
         review.details,
         normalized,
         Date.now(),
+        joinsSettledChain ? Date.now() : null,
         repeatOf,
         resolved.providerId,
         resolved.model,
@@ -2472,11 +2538,21 @@ export default async function plugin(bb: BbPluginApi) {
     // A finding the advisor previously closed has come back. That is a
     // regression, not a closure, so the chain reopens. A chain the USER
     // settled is deliberately left alone: their decision is authoritative and
-    // a restatement must not drag it back open.
+    // a restatement must not drag it back open. A banner dismissal is the one
+    // exception — the advisor raising the finding at a higher severity
+    // reopens even a dismissed chain.
     if (root !== null && root.closed_at !== null && root.resolved_at === null) {
       db.prepare(
         `UPDATE advisor_reviews
          SET closed_at = NULL, closed_seq = NULL, auto_continued_at = NULL
+         WHERE primary_thread_id = ? AND id = ?`,
+      ).run(primaryThreadId, root.id);
+    }
+    if (root !== null && reopensDismissal) {
+      db.prepare(
+        `UPDATE advisor_reviews
+         SET resolved_at = NULL, resolved_reason = '', decision = '',
+             dismissed_severity = NULL, auto_continued_at = NULL
          WHERE primary_thread_id = ? AND id = ?`,
       ).run(primaryThreadId, root.id);
     }
@@ -2652,7 +2728,10 @@ export default async function plugin(bb: BbPluginApi) {
           {
             type: "text",
             visibility: "agent-only",
-            text: turnBriefing(tellPolicy, findings.map(rowToReview)),
+            text: turnBriefing(
+              tellPolicy,
+              findings.map((row) => rowToReview(row, agentWasToldBefore(row))),
+            ),
             mentions: [],
           },
         ],

@@ -33,13 +33,13 @@ export interface AdvisorParsedReview extends AdvisorReview {
 }
 
 /**
- * A persisted review. `repeatOf` is the id of the earlier review carrying
- * identical normalized advice, which means the primary agent was already told
- * this and has not resolved it — deliberately not a reason to soften the
- * severity.
+ * A persisted review. `toldBefore` means an earlier round of the same finding
+ * actually reached the primary agent and it has not resolved it — deliberately
+ * not a reason to soften the severity. A repeat alone does not imply it: rounds
+ * raised while the user had the finding dismissed never reach the agent.
  */
 export interface AdvisorFinding extends AdvisorReview {
-  repeatOf: number | null;
+  toldBefore: boolean;
 }
 
 const SEVERITY_RANK: Record<AdvisorSeverity, number> = {
@@ -139,10 +139,9 @@ export function formatReview(finding: AdvisorFinding): string {
     return `Advisor pass: ${finding.summary}`;
   }
   const details = finding.details.length > 0 ? `\n\n${finding.details}` : "";
-  const repeat =
-    finding.repeatOf === null
-      ? ""
-      : "\n\n(This repeats advice already given earlier in this thread, so it is still unresolved. Fix it or explain why it does not apply.)";
+  const repeat = finding.toldBefore
+    ? "\n\n(This repeats advice already given earlier in this thread, so it is still unresolved. Fix it or explain why it does not apply.)"
+    : "";
   return `Advisor ${finding.severity}: ${finding.summary}${details}${repeat}`;
 }
 

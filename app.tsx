@@ -721,7 +721,9 @@ function AdvisorComposerBanner() {
       </div>
       <p className="mt-2">
         <span className="font-medium text-foreground">{advice.summary}</span>
-        {repeated ? (
+        {/* A repeat alone is not proof: rounds raised while the finding was
+            dismissed never reached the agent. */}
+        {advice.toldBefore ? (
           <span className="text-destructive-text">
             {" "}
             The agent was told this before and did not resolve it.
