@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6
+
+- Settle a finding when you dismiss it from the banner, the same as resolving it in the panel. The reviewer no longer treats it as open, so the agent stops getting it again on later turns. If the advisor later raises it at a higher severity, it reopens, so dismissing a nit cannot silence a blocker. Thanks to @k0d3r1s (#15, #16).
+- Send a reopened finding to the agent once. Rounds the advisor raises while a finding is dismissed or resolved no longer wait to reach the agent all together.
+- Say a finding was raised before, in the banner and in the agent's message, only when an earlier round actually reached the agent.
+
+Requires BB 0.47.1 or later and plugin SDK 0.6.79 or later.
+
 ## 0.1.5
 
 - Build with BB 0.47.1 and plugin SDK 0.6.79. The Advisor panel now registers as a thread tab through `experimental_tab`, because BB removed the old thread panel slot. The tab keeps its id, so panels users already opened still restore.
