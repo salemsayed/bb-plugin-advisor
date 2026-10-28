@@ -371,6 +371,8 @@ const chainRootRowSchema = z.object({
   closed_at: z.number().nullable(),
   closed_seq: z.number().int().nullable(),
   decision: decisionSchema,
+  /** Set by a banner dismissal: the severity the user dismissed. */
+  dismissed_severity: severitySchema.nullable(),
   auto_continued_at: z.number().nullable(),
 });
 
@@ -856,6 +858,10 @@ export default async function plugin(bb: BbPluginApi) {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       switched_on_at INTEGER NOT NULL
     )`,
+    // The severity the user saw when they dismissed the finding, on the chain
+    // root. A dismissal settles the chain; the advisor raising it again at a
+    // higher severity is what reopens it.
+    `ALTER TABLE advisor_reviews ADD COLUMN dismissed_severity TEXT`,
   ]);
 
   const primaryContexts = new Map<string, PrimaryContext>();
@@ -1026,7 +1032,7 @@ export default async function plugin(bb: BbPluginApi) {
       db
         .prepare(
           `SELECT id, severity, resolved_at, resolved_reason, closed_at,
-                  closed_seq, decision, auto_continued_at
+                  closed_seq, decision, dismissed_severity, auto_continued_at
            FROM advisor_reviews
            WHERE primary_thread_id = ? AND id = ? AND repeat_of IS NULL`,
         )
@@ -1675,10 +1681,27 @@ export default async function plugin(bb: BbPluginApi) {
         publishThreadChanged(threadId);
         return { ok: true, dismissed: false } as const;
       }
-      db.prepare(`UPDATE advisor_reviews SET delivered_at = ? WHERE id = ?`).run(
-        Date.now(),
-        row.id,
+      const chainId = chainKeyOf(row);
+      // readPendingAdvice excludes settled chains, so the chain's pending rows
+      // must be collected before the root below is settled.
+      const pendingInChain = readPendingAdvice(threadId).filter(
+        (candidate) => chainKeyOf(candidate) === chainId,
       );
+      // Dismissing settles the whole chain the way the panel's resolveFinding
+      // does, so readOpenFindings, readPendingAdvice, and the tool result all
+      // stop treating it as open. The panel reads a root with resolved_at set
+      // and an empty decision as "You dismissed it". The severity the user
+      // dismissed is kept on the root: the advisor raising the finding again
+      // at a higher one reopens the chain, at the same or a lower one does not.
+      db.prepare(
+        `UPDATE advisor_reviews
+         SET resolved_at = ?, resolved_reason = '', decision = '',
+             dismissed_severity = ?
+         WHERE primary_thread_id = ? AND id = ? AND repeat_of IS NULL`,
+      ).run(Date.now(), row.severity, threadId, chainId);
+      for (const pending of pendingInChain) {
+        markReviewDelivered(pending.id, false);
+      }
       publishThreadChanged(threadId);
       return { ok: true, dismissed: true } as const;
     },
@@ -1705,7 +1728,8 @@ export default async function plugin(bb: BbPluginApi) {
         if (resolved) {
           db.prepare(
             `UPDATE advisor_reviews
-             SET resolved_at = ?, resolved_reason = ?, decision = ?
+             SET resolved_at = ?, resolved_reason = ?, decision = ?,
+                 dismissed_severity = NULL
              WHERE primary_thread_id = ? AND id = ? AND repeat_of IS NULL`,
           ).run(
             Date.now(),
@@ -1720,6 +1744,7 @@ export default async function plugin(bb: BbPluginApi) {
           db.prepare(
             `UPDATE advisor_reviews
              SET resolved_at = NULL, resolved_reason = '', decision = '',
+                 dismissed_severity = NULL,
                  closed_at = NULL, closed_seq = NULL,
                  auto_continued_at = NULL
              WHERE primary_thread_id = ? AND id = ? AND repeat_of IS NULL`,
@@ -2416,7 +2441,7 @@ export default async function plugin(bb: BbPluginApi) {
       (findingKey.length > 0
         ? matchChainRoot(
             `SELECT id, severity, resolved_at, resolved_reason, closed_at,
-                    closed_seq, decision, auto_continued_at
+                    closed_seq, decision, dismissed_severity, auto_continued_at
              FROM advisor_reviews
              WHERE primary_thread_id = ? AND finding_key = ?
              ORDER BY source_seq, id LIMIT 1`,
@@ -2430,7 +2455,7 @@ export default async function plugin(bb: BbPluginApi) {
       (normalized.length >= MIN_CHAINABLE_ADVICE_LENGTH
         ? matchChainRoot(
             `SELECT id, severity, resolved_at, resolved_reason, closed_at,
-                    closed_seq, decision, auto_continued_at
+                    closed_seq, decision, dismissed_severity, auto_continued_at
              FROM advisor_reviews
              WHERE primary_thread_id = ? AND normalized = ?
              ORDER BY source_seq, id LIMIT 1`,
@@ -2472,11 +2497,26 @@ export default async function plugin(bb: BbPluginApi) {
     // A finding the advisor previously closed has come back. That is a
     // regression, not a closure, so the chain reopens. A chain the USER
     // settled is deliberately left alone: their decision is authoritative and
-    // a restatement must not drag it back open.
+    // a restatement must not drag it back open. A banner dismissal is the one
+    // exception — the advisor raising the finding at a higher severity
+    // reopens even a dismissed chain.
     if (root !== null && root.closed_at !== null && root.resolved_at === null) {
       db.prepare(
         `UPDATE advisor_reviews
          SET closed_at = NULL, closed_seq = NULL, auto_continued_at = NULL
+         WHERE primary_thread_id = ? AND id = ?`,
+      ).run(primaryThreadId, root.id);
+    }
+    if (
+      root !== null &&
+      root.resolved_at !== null &&
+      root.dismissed_severity !== null &&
+      SEVERITY_RANK[review.severity] > SEVERITY_RANK[root.dismissed_severity]
+    ) {
+      db.prepare(
+        `UPDATE advisor_reviews
+         SET resolved_at = NULL, resolved_reason = '', decision = '',
+             dismissed_severity = NULL, auto_continued_at = NULL
          WHERE primary_thread_id = ? AND id = ?`,
       ).run(primaryThreadId, root.id);
     }

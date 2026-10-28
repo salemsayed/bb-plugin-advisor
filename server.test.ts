@@ -1802,6 +1802,224 @@ END_ADVISOR_RESULT`;
     expect(await startTurn(harness)).toBeNull();
   });
 
+  const keyedFinding = (
+    severity: "concern" | "blocker",
+    key: string,
+    summary: string,
+  ) => `ADVISOR_RESULT
+severity: ${severity}
+key: ${key}
+summary: ${summary}
+details:
+- Correct ${key}.
+resolved: none
+END_ADVISOR_RESULT`;
+
+  it("keeps a dismissed chain settled when the advisor re-raises it at the same severity", async () => {
+    const { harness, spawn, setTimelineSeq, setAdvisorOutput } =
+      await loadAutoAdvisor(
+        keyedFinding("blocker", "dismiss-me", "First dismissed finding"),
+      );
+    const idle = (text: string) =>
+      harness.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({
+          id: "thread-primary",
+          visibility: "visible",
+        }),
+        lastAssistantText: text,
+      });
+    await idle("First turn.");
+    const before = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { id: number } | null };
+    await expect(
+      harness.callRpc("dismissAdvice", {
+        threadId: "thread-primary",
+        adviceId: before.advice!.id,
+      }),
+    ).resolves.toEqual({ ok: true, dismissed: true });
+
+    setTimelineSeq(43);
+    setAdvisorOutput(
+      keyedFinding("blocker", "dismiss-me", "First dismissed finding"),
+    );
+    await idle("Second turn.");
+
+    const pending = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: unknown };
+    expect(pending.advice).toBeNull();
+    expect(await startTurn(harness)).toBeNull();
+    // The reviewer must not be told the dismissed finding is still open.
+    const prompt = spawn.mock.lastCall?.[0].prompt;
+    expect(prompt).toBeDefined();
+    expect(prompt).toContain("still open:\nNone.");
+  });
+
+  it("returns no unresolved findings from the advisor tool after a dismiss", async () => {
+    const { harness, setTimelineSeq, setAdvisorOutput } = await loadAutoAdvisor(
+      keyedFinding("blocker", "tool-dismiss", "Tool dismissed finding"),
+    );
+    await harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({
+        id: "thread-primary",
+        visibility: "visible",
+      }),
+      lastAssistantText: "First turn.",
+    });
+    const before = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { id: number } | null };
+    await harness.callRpc("dismissAdvice", {
+      threadId: "thread-primary",
+      adviceId: before.advice!.id,
+    });
+
+    setTimelineSeq(43);
+    setAdvisorOutput(
+      keyedFinding("blocker", "tool-dismiss", "Tool dismissed finding"),
+    );
+    await expect(
+      harness.callAgentTool(
+        "advisor_review",
+        { focus: "Second pass." },
+        { threadId: "thread-primary" },
+      ),
+    ).resolves.toBe("Advisor pass: no unresolved findings.");
+  });
+
+  it("reopens a dismissed chain when the advisor re-raises it at a higher severity", async () => {
+    const { harness, setTimelineSeq, setAdvisorOutput } = await loadAutoAdvisor(
+      keyedFinding("concern", "escalate-me", "Dismissed concern"),
+    );
+    const idle = (text: string) =>
+      harness.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({
+          id: "thread-primary",
+          visibility: "visible",
+        }),
+        lastAssistantText: text,
+      });
+    await idle("First turn.");
+    const before = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { id: number } | null };
+    await harness.callRpc("dismissAdvice", {
+      threadId: "thread-primary",
+      adviceId: before.advice!.id,
+    });
+    // Only a dismissal that settled the chain can be reopened by an escalation.
+    const dismissed = (await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as { reviews: { resolvedAt: number | null }[] };
+    expect(dismissed.reviews[0]?.resolvedAt).toEqual(expect.any(Number));
+
+    setTimelineSeq(43);
+    setAdvisorOutput(keyedFinding("blocker", "escalate-me", "Dismissed concern"));
+    await idle("Second turn.");
+
+    const panel = (await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as {
+      reviews: { resolvedAt: number | null; repeatCount: number }[];
+    };
+    expect(panel.reviews[0]).toMatchObject({
+      resolvedAt: null,
+      repeatCount: 2,
+    });
+    const pending = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { severity: string; summary: string } | null };
+    expect(pending.advice).toMatchObject({
+      severity: "blocker",
+      summary: "Dismissed concern",
+    });
+  });
+
+  it("shows a dismissed chain in the panel as resolved with no decision", async () => {
+    const { harness } = await loadAutoAdvisor(BLOCKER_OUTPUT);
+    await harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({
+        id: "thread-primary",
+        visibility: "visible",
+      }),
+      lastAssistantText: "First turn.",
+    });
+    const before = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: { id: number } | null };
+    await harness.callRpc("dismissAdvice", {
+      threadId: "thread-primary",
+      adviceId: before.advice!.id,
+    });
+
+    const panel = (await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as {
+      reviews: {
+        resolvedAt: number | null;
+        resolvedReason: string;
+        decision: string;
+      }[];
+    };
+    expect(panel.reviews[0]).toMatchObject({
+      resolvedAt: expect.any(Number),
+      resolvedReason: "",
+      decision: "",
+    });
+  });
+
+  it("keeps a panel-resolved chain settled when the advisor re-raises it at a higher severity", async () => {
+    const { harness, setTimelineSeq, setAdvisorOutput } = await loadAutoAdvisor(
+      keyedFinding("concern", "stay-closed", "Panel resolved concern"),
+    );
+    const idle = (text: string) =>
+      harness.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({
+          id: "thread-primary",
+          visibility: "visible",
+        }),
+        lastAssistantText: text,
+      });
+    await idle("First turn.");
+    const before = (await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as { reviews: { chainId: number }[] };
+    await harness.callRpc("resolveFinding", {
+      threadId: "thread-primary",
+      chainId: before.reviews[0]!.chainId,
+      resolved: true,
+      reason: "Not an issue.",
+      decision: "not-an-issue",
+    });
+
+    setTimelineSeq(43);
+    setAdvisorOutput(
+      keyedFinding("blocker", "stay-closed", "Panel resolved concern"),
+    );
+    await idle("Second turn.");
+
+    const panel = (await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as {
+      reviews: {
+        resolvedAt: number | null;
+        decision: string;
+        repeatCount: number;
+      }[];
+    };
+    expect(panel.reviews[0]).toMatchObject({
+      resolvedAt: expect.any(Number),
+      decision: "not-an-issue",
+      repeatCount: 2,
+    });
+    const pending = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: unknown };
+    expect(pending.advice).toBeNull();
+    expect(await startTurn(harness)).toBeNull();
+  });
+
   it("resolves a chain, removes it from the badge, and clears pending advice", async () => {
     const { harness } = await loadAutoAdvisor(BLOCKER_OUTPUT);
     await harness.emitThreadEvent("thread.idle", {
