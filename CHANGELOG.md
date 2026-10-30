@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.7
+
+- Add a free-text Findings language setting under Settings → Extensions → Advisor for finding titles, explanations and suggestions. Empty keeps the current behavior; plugin UI stays unchanged. Thanks to @GEFNENEN (#18).
+
+Requires BB 0.47.1 or later and plugin SDK 0.6.79 or later.
+
 ## 0.1.6
 
 - Settle a finding when you dismiss it from the banner, the same as resolving it in the panel. The reviewer no longer treats it as open, so the agent stops getting it again on later turns. If the advisor later raises it at a higher severity, it reopens, so dismissing a nit cannot silence a blocker. Thanks to @k0d3r1s (#15, #16).

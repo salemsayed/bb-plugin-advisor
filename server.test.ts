@@ -455,6 +455,20 @@ describe("advisor settings compatibility", () => {
     );
   });
 
+  it("uses the native language setting in the actual reviewer prompt", async () => {
+    const { harness, spawn } = await loadAdvisor("severity: pass\nsummary: fine", {
+      findingsLanguage: "  简体中文  ",
+    });
+    expect(harness.registrations.settingsDescriptors.findingsLanguage).toMatchObject({
+      type: "string",
+      label: "Findings language",
+      default: "",
+    });
+    await harness.callAgentTool("advisor_review", { focus: "" }, { threadId: "thread-primary", projectId: "project-test" });
+    expect(spawn.mock.calls[0]?.[0].prompt).toContain('Findings language (JSON data): "简体中文"');
+    await harness.lifecycle.dispose();
+  });
+
   it("maps a legacy stored timeout value to the new labeled setting", async () => {
     const common = {
       enabled: true,

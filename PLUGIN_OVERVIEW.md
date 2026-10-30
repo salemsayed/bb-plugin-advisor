@@ -10,6 +10,8 @@ Open the Advisor panel to see findings, evidence, and review history. Findings r
 
 Use the switch in an existing thread's composer to override the global default. New threads follow that default. Turning a thread off stops automatic reviews and automatic corrective turns; explicit review requests still work. Automatic corrective turns are off by default.
 
+Set **Findings language** in Settings → Extensions → Advisor to choose the language of finding titles, explanations and suggestions. Leave it empty to keep the current behavior. Plugin UI stays unchanged.
+
 Choose a reviewer model and reasoning level for each connected machine, or follow the primary thread's model. The reviewer can use the same provider or another configured provider that supports its required permission mode.
 
 ## Requirements and usage
