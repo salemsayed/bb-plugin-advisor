@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.8
 
 - Spell out in the review prompt that the result block is read by a program: its markers, field names, colons and severity value are fixed English tokens that the Findings language preference does not cover, and a block that does not have exactly that shape is discarded as if the review had never run. A non-English Findings language used to make reviewers translate the block and lose a substantively valid review (#18).
 - Add an **Additional instructions** setting. Free text appended to the end of the advisor prompt, after the result format, so a review can be tuned without forking the plugin. It is fenced and explicitly cannot change the block's shape, field names, severity values or markers; the fence grows with the text so it cannot be closed from inside; empty adds nothing.
