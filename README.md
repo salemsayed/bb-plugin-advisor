@@ -108,7 +108,8 @@ All settings live in **Settings → Extensions → Advisor**.
 | Auto-continue on late findings | **off** | See below. |
 | Fallback advisor reasoning | inherit | Used only when a machine follows the primary model. |
 | Minimum severity | nit | Findings below the threshold are not delivered to the agent. |
-| Findings language | empty | Language for finding titles, explanations and suggestions, such as 简体中文 or English. Empty keeps current behavior; plugin UI stays unchanged. Trimmed and limited to 40 characters. |
+| Findings language | empty | Language for finding titles, explanations and suggestions, such as 简体中文 or English. Empty keeps current behavior; plugin UI stays unchanged. Trimmed and limited to 40 characters. Does not apply to the result block's markers, field names, colons or severity values. |
+| Additional instructions | empty | Free text appended to the end of the advisor prompt, after the result format. Use it to tune the review without forking the plugin. It cannot change the result block's shape, field names, severity values or markers. Trimmed and limited to 4000 characters; empty adds nothing. |
 | Watchdog file | `WATCHDOG.md` | Workspace-relative reviewer policy file. |
 | Review timeout | 2 minutes | 30 seconds to 10 minutes. Exceeding it reports unavailable, never a pass. |
 | Transcript budget | 60,000 characters | 20,000 to 120,000. |

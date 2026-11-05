@@ -469,6 +469,48 @@ describe("advisor settings compatibility", () => {
     await harness.lifecycle.dispose();
   });
 
+  it("appends the additional-instructions setting to the real reviewer prompt", async () => {
+    const extra = "Only report defects that change behaviour.";
+    const { harness, spawn } = await loadAdvisor("severity: pass\nsummary: fine", {
+      additionalInstructions: `  ${extra}  `,
+    });
+    expect(
+      harness.registrations.settingsDescriptors.additionalInstructions,
+    ).toMatchObject({
+      type: "string",
+      label: "Additional instructions",
+      experimental_multiline: true,
+      default: "",
+    });
+    await harness.callAgentTool(
+      "advisor_review",
+      { focus: "" },
+      { threadId: "thread-primary", projectId: "project-test" },
+    );
+    const prompt = spawn.mock.calls[0]?.[0].prompt ?? "";
+    expect(prompt).toContain(extra);
+    // Trimmed, appended after the format, and fenced.
+    expect(prompt).toContain(`<<<\n${extra}\n>>>`);
+    expect(prompt.indexOf(extra)).toBeGreaterThan(
+      prompt.indexOf("END_ADVISOR_RESULT"),
+    );
+    await harness.lifecycle.dispose();
+  });
+
+  it("leaves the reviewer prompt untouched when the setting is empty", async () => {
+    const { harness, spawn } = await loadAdvisor("severity: pass\nsummary: fine", {
+      additionalInstructions: "   ",
+    });
+    await harness.callAgentTool(
+      "advisor_review",
+      { focus: "" },
+      { threadId: "thread-primary", projectId: "project-test" },
+    );
+    const prompt = spawn.mock.calls[0]?.[0].prompt ?? "";
+    expect(prompt).not.toContain("Additional instructions from the operator");
+    await harness.lifecycle.dispose();
+  });
+
   it("maps a legacy stored timeout value to the new labeled setting", async () => {
     const common = {
       enabled: true,
