@@ -32,6 +32,8 @@ Primary timeline through sequence 42 (JSONL, oldest selected row first):
 
 Return exactly one result in this format. Use pass and silence-equivalent details when there is no actionable issue. Do not repeat old advice merely to have something to say.
 
+The block below is read by a program, not by a person, so its shape is not prose. Its two marker lines, every field name before a colon, the colons themselves and the severity value are fixed English tokens: never translate them, never use a full-width colon, and never add, rename or reorder a field. Only the summary text and the details lines are written in the language of the work. A block that does not have exactly this shape cannot be read at all, and the review is then discarded as if it had never run.
+
 ADVISOR_RESULT
 severity: pass|nit|concern|blocker
 key: a short stable slug naming the defect itself, anchored to where it lives, e.g. server-ts-runreview-timeout-untested. Use the SAME key whenever you raise the same underlying defect again, even if you reword it or rate it differently. Use "none" for a pass.
