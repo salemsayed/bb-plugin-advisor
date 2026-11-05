@@ -17,11 +17,14 @@ const args = {
   openFindingsTruncated: false,
 };
 
-const original = readFileSync(new URL("./fixtures/default-prompt.txt", import.meta.url), "utf8");
+// The prompt this release builds with no findings language and no additional
+// instructions. Regenerated with the format paragraph, so it is the current
+// baseline rather than the previous release's prompt byte-for-byte.
+const baseline = readFileSync(new URL("./fixtures/default-prompt.txt", import.meta.url), "utf8");
 
 describe("findings language prompt", () => {
-  it.each([undefined, "", "  \n\t　"])("keeps the original prompt byte-for-byte for %j", (findingsLanguage) => {
-    expect(buildAdvisorPrompt({ ...args, findingsLanguage })).toBe(original);
+  it.each([undefined, "", "  \n\t　"])("keeps the baseline prompt byte-for-byte for %j", (findingsLanguage) => {
+    expect(buildAdvisorPrompt({ ...args, findingsLanguage })).toBe(baseline);
   });
 
   it("adds a data-only language preference for finding prose", () => {
@@ -48,11 +51,12 @@ describe("additional instructions", () => {
   const extra = "Prefer findings that affect the public API. Never suggest refactors.";
 
   it.each([undefined, "", "   \n\t  "])(
-    "leaves the prompt byte-for-byte unchanged for %j",
+    "appends nothing when the value is %j",
     (additionalInstructions) => {
-      // An existing install has nothing stored here, so an unset or blank value
-      // has to produce exactly the prompt it produced before this setting existed.
-      expect(buildAdvisorPrompt({ ...args, additionalInstructions })).toBe(original);
+      // Relative to the prompt this release builds without the setting, not to
+      // the previous release: the fixture already carries the format paragraph
+      // added alongside it, so an empty value must add no bytes to that baseline.
+      expect(buildAdvisorPrompt({ ...args, additionalInstructions })).toBe(baseline);
     },
   );
 
