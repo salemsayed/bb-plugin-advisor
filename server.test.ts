@@ -710,6 +710,7 @@ END_ADVISOR_RESULT`);
         permissionMode: "accept-edits",
         environment: { type: "reuse", environmentId: "environment-test" },
         visibility: "hidden",
+        lifecycleOwnerThreadId: "thread-primary",
       }),
     );
     expect(harness.sdk.callsTo("threads.wait")).toEqual([
