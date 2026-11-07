@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9
+
+- Archive and delete the hidden reviewer together with its primary thread. bb now owns the reviewer's lifecycle, so it is archived when the primary is archived and deleted when the primary is deleted, even while Advisor is disabled or not loaded. Deleting a primary used to leave its reviewer behind as an archived thread, and archiving one while Advisor was off left the reviewer live. Reviewers created by earlier versions are still archived by Advisor as before. Thanks to @ymichael (#22).
+
+Requires BB 0.47.1 or later and plugin SDK 0.6.79 or later.
+
 ## 0.1.8
 
 - Spell out in the review prompt that the result block is read by a program: its markers, field names, colons and severity value are fixed English tokens that the Findings language preference does not cover, and a block that does not have exactly that shape is discarded as if the review had never run. A non-English Findings language used to make reviewers translate the block and lose a substantively valid review (#18).
