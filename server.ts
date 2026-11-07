@@ -2312,6 +2312,9 @@ export default async function plugin(bb: BbPluginApi) {
           permissionMode: candidate as AdvisorPermissionMode,
           environment: { type: "reuse", environmentId: context.environmentId },
           visibility: "hidden",
+          // bb archives and deletes the reviewer with its primary, including
+          // while Advisor is disabled or unloaded.
+          lifecycleOwnerThreadId: primaryThreadId,
           title: `${ADVISOR_TITLE_PREFIX}${primary.title ?? primary.titleFallback ?? primaryThreadId}`,
           prompt,
         });
@@ -2938,6 +2941,8 @@ export default async function plugin(bb: BbPluginApi) {
 
     // The hidden reviewer is archived either way: it is an appliance of the
     // primary thread, and unarchiving the primary respawns one on next review.
+    // bb already does this for reviewers it owns through the primary; this
+    // covers reviewers spawned before Advisor set that owner.
     if (advisorThreadId) {
       await bb.sdk.threads
         .archive({ threadId: advisorThreadId })
