@@ -1656,6 +1656,45 @@ describe("advisor unavailability", () => {
     expect(result).not.toContain("unavailable");
   });
 
+  it("skips a fresh reply without a verdict when an earlier one has it", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("threads.wait", async () => {
+      throw new Error("ThreadWaitTimeoutError: timed out");
+    });
+    harness.sdk.stub(
+      "threads.timeline",
+      async ({ threadId }: { threadId: string }) =>
+        threadId === "thread-advisor"
+          ? {
+              rows: [
+                {
+                  kind: "conversation",
+                  role: "assistant",
+                  text: BLOCKER_OUTPUT,
+                  createdAt: Date.now(),
+                },
+                {
+                  kind: "conversation",
+                  role: "assistant",
+                  text: "Already returned the ADVISOR_RESULT block above.",
+                  createdAt: Date.now() + 1_000,
+                },
+              ],
+              maxSeq: 6,
+            }
+          : timeline(42),
+    );
+
+    const result = await harness.callAgentTool(
+      "advisor_review",
+      { focus: "Review with a steer reply after the verdict." },
+      { threadId: "thread-primary" },
+    );
+
+    expect(result).toContain("Advisor blocker:");
+    expect(result).not.toContain("unavailable");
+  });
+
   it("ignores a reply older than this round's prompt", async () => {
     const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
     harness.sdk.stub("threads.wait", async () => {

@@ -2507,18 +2507,25 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   /**
-   * The newest assistant reply the reviewer wrote at or after `sentAtMs`.
+   * The newest assistant reply the reviewer wrote at or after `sentAtMs` that
+   * carries the result block.
    *
    * `threads.output` cannot date a reply, and a reused reviewer still holds the
    * previous round's verdict — crediting it to this round would approve work
    * nobody reviewed. A conversation row is created after the prompt that
    * produced it, and the only prompts this thread accepts are this round's, so
    * `createdAt` at or past the send proves the reply belongs to it.
+   *
+   * A queued `FINALIZE NOW` steer can add a second turn whose reply does not
+   * repeat the block ("Already returned the ADVISOR_RESULT block above."), so
+   * the newest fresh reply is only a fallback: the newest reply that actually
+   * parses as a result wins — a bare mention of the marker does not count.
    */
   async function readAdvisorReplySince(
     advisorThreadId: string,
     sentAtMs: number,
   ): Promise<string | null> {
+    let newest: string | null = null;
     try {
       const { rows } = await bb.sdk.threads.timeline({
         threadId: advisorThreadId,
@@ -2527,17 +2534,20 @@ export default async function plugin(bb: BbPluginApi) {
       for (let index = rows.length - 1; index >= 0; index -= 1) {
         const row = rows[index]!;
         if (
-          row.kind === "conversation" &&
-          row.role === "assistant" &&
-          row.createdAt >= sentAtMs
+          row.kind !== "conversation" ||
+          row.role !== "assistant" ||
+          typeof row.createdAt !== "number" ||
+          row.createdAt < sentAtMs
         ) {
-          return row.text;
+          continue;
         }
+        if (parseAdvisorOutput(row.text) !== null) return row.text;
+        newest ??= row.text;
       }
     } catch {
       // A failed read is indistinguishable from no reply: the round is lost.
     }
-    return null;
+    return newest;
   }
 
   async function runReview(
