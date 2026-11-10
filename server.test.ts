@@ -1601,6 +1601,128 @@ describe("advisor unavailability", () => {
 
     expect(await startTurn(harness)).toContain("The claimed test did not run");
   });
+
+  it("retries a dead wait connection instead of losing the review", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    let waits = 0;
+    harness.sdk.stub("threads.wait", async () => {
+      waits += 1;
+      if (waits === 1) {
+        throw new Error("Client connection prematurely closed.");
+      }
+      return { matched: true };
+    });
+
+    const result = await harness.callAgentTool(
+      "advisor_review",
+      { focus: "Review behind a flaky connection." },
+      { threadId: "thread-primary" },
+    );
+
+    expect(result).toContain("Advisor blocker:");
+    expect(waits).toBe(2);
+  });
+
+  it("reads back the emitted verdict when the wait fails after the reply", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("threads.wait", async () => {
+      throw new Error("ThreadWaitTimeoutError: timed out");
+    });
+    harness.sdk.stub(
+      "threads.timeline",
+      async ({ threadId }: { threadId: string }) =>
+        threadId === "thread-advisor"
+          ? {
+              rows: [
+                {
+                  kind: "conversation",
+                  role: "assistant",
+                  text: BLOCKER_OUTPUT,
+                  createdAt: Date.now(),
+                },
+              ],
+              maxSeq: 5,
+            }
+          : timeline(42),
+    );
+
+    const result = await harness.callAgentTool(
+      "advisor_review",
+      { focus: "Review whose reply outlives its wait." },
+      { threadId: "thread-primary" },
+    );
+
+    expect(result).toContain("Advisor blocker:");
+    expect(result).not.toContain("unavailable");
+  });
+
+  it("ignores a reply older than this round's prompt", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("threads.wait", async () => {
+      throw new Error("ThreadWaitTimeoutError: timed out");
+    });
+    harness.sdk.stub(
+      "threads.timeline",
+      async ({ threadId }: { threadId: string }) =>
+        threadId === "thread-advisor"
+          ? {
+              rows: [
+                {
+                  kind: "conversation",
+                  role: "assistant",
+                  text: BLOCKER_OUTPUT,
+                  createdAt: Date.now() - 60_000,
+                },
+              ],
+              maxSeq: 5,
+            }
+          : timeline(42),
+    );
+
+    const result = await harness.callAgentTool(
+      "advisor_review",
+      { focus: "Review with only a stale reply." },
+      { threadId: "thread-primary" },
+    );
+
+    expect(result).toContain("Advisor unavailable");
+    expect(result).toContain("did not finish within");
+  });
+
+  it("resends the prompt when the reviewer is still finishing an earlier round", async () => {
+    const { harness, setTimelineSeq } = await loadAdvisor(BLOCKER_OUTPUT);
+    await harness.callAgentTool(
+      "advisor_review",
+      { focus: "First round." },
+      { threadId: "thread-primary" },
+    );
+
+    setTimelineSeq(43);
+    let starts = 0;
+    harness.sdk.stub("threads.send", async (args: { mode?: string }) => {
+      if (args.mode === "start") {
+        starts += 1;
+        if (starts === 1) {
+          const error = new Error("HTTP 409: Thread is already active");
+          (error as { body?: unknown }).body = {
+            code: "thread_not_writable",
+            details: { reason: "already_active" },
+          };
+          throw error;
+        }
+      }
+      return { ok: true };
+    });
+
+    const result = await harness.callAgentTool(
+      "advisor_review",
+      { focus: "Second round." },
+      { threadId: "thread-primary" },
+    );
+
+    expect(result).toContain("Advisor blocker:");
+    expect(starts).toBe(2);
+  });
 });
 
 describe("post-turn review scope", () => {

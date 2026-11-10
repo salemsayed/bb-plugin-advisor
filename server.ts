@@ -63,6 +63,26 @@ const MAX_INCIDENTS_PER_THREAD = 50;
  * both out; this is far more than any real instruction set needs.
  */
 const MAX_ADDITIONAL_INSTRUCTIONS = 4_000;
+/**
+ * Pause between `threads.wait` retries inside the review budget. One failed
+ * poll is a dead socket, not a dead reviewer, so it must not lose the review.
+ */
+const WAIT_RETRY_DELAY_MS = 1_000;
+/**
+ * Consecutive dead polls before a wait gives up: a transport that keeps
+ * refusing is broken in a way retrying cannot fix.
+ */
+const MAX_WAIT_TRANSIENT_FAILURES = 8;
+/**
+ * Grace after the review deadline before the reviewer is interrupted. A reply
+ * written seconds late is still this round's verdict.
+ */
+const LATE_REPLY_GRACE_MS = 10_000;
+/**
+ * Grace for a reviewer still finishing an older round when a new prompt is
+ * refused; after it the older round is interrupted for the newer work.
+ */
+const BUSY_REVIEWER_GRACE_MS = 20_000;
 
 // Provider catalogs report reasoning efforts as open strings, so a level a
 // newer provider adds must round-trip rather than fail the contract.
@@ -2403,6 +2423,123 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  /**
+   * Whether `threads.send` was refused because the reviewer is still finishing
+   * an earlier turn.
+   */
+  function isAlreadyActiveError(error: unknown): boolean {
+    const body =
+      error instanceof Error ? (error as { body?: unknown }).body : undefined;
+    const reason =
+      typeof body === "object" && body !== null
+        ? (body as { details?: { reason?: unknown } }).details?.reason
+        : undefined;
+    return (
+      reason === "already_active" ||
+      (error instanceof Error && /already active/i.test(error.message))
+    );
+  }
+
+  /**
+   * Whether a `threads.wait` failure is worth retrying inside the budget. The
+   * SDK's own deadline and a status that can never turn idle are terminal, and
+   * an answer carrying a parsed body is the daemon ruling on the call, not a
+   * transport glitch. A bare poll failure — a dropped socket mid-wait — is
+   * transient: the thread keeps working either way.
+   */
+  function isTerminalWaitError(
+    error: unknown,
+    signal: AbortSignal | undefined,
+  ): boolean {
+    if (signal?.aborted) return true;
+    if (error instanceof Error && "body" in error) return true;
+    const name = error instanceof Error ? error.name : "";
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      name === "ThreadWaitTimeoutError" ||
+      name === "ThreadWaitUnreachableError" ||
+      message.includes("ThreadWaitTimeoutError") ||
+      message.includes("ThreadWaitUnreachableError") ||
+      message.includes("will not reach idle by waiting alone") ||
+      message.startsWith("Timed out waiting for thread")
+    );
+  }
+
+  /**
+   * `threads.wait` treats one dead poll as a dead reviewer: a dropped socket
+   * fails the whole review even though the thread is still working. A poll
+   * error is retried inside the budget; only the deadline itself, a caller
+   * abort, or a status that can never turn idle loses the wait.
+   */
+  async function waitForAdvisorIdle(
+    threadId: string,
+    budgetMs: number,
+    signal: AbortSignal | undefined,
+  ): Promise<{ idle: boolean; lastError: unknown }> {
+    const deadline = Date.now() + budgetMs;
+    let lastError: unknown = new Error(
+      `Timed out waiting for thread ${threadId} to reach status idle.`,
+    );
+    let transientFailures = 0;
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { idle: false, lastError };
+      try {
+        await bb.sdk.threads.wait({
+          threadId,
+          status: "idle",
+          timeoutMs: remaining,
+          ...(signal ? { signal } : {}),
+        });
+        return { idle: true, lastError: null };
+      } catch (error) {
+        lastError = error;
+        if (isTerminalWaitError(error, signal)) {
+          return { idle: false, lastError };
+        }
+        transientFailures += 1;
+        if (transientFailures >= MAX_WAIT_TRANSIENT_FAILURES) {
+          return { idle: false, lastError };
+        }
+        await new Promise((resolve) => setTimeout(resolve, WAIT_RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  /**
+   * The newest assistant reply the reviewer wrote at or after `sentAtMs`.
+   *
+   * `threads.output` cannot date a reply, and a reused reviewer still holds the
+   * previous round's verdict — crediting it to this round would approve work
+   * nobody reviewed. A conversation row is created after the prompt that
+   * produced it, and the only prompts this thread accepts are this round's, so
+   * `createdAt` at or past the send proves the reply belongs to it.
+   */
+  async function readAdvisorReplySince(
+    advisorThreadId: string,
+    sentAtMs: number,
+  ): Promise<string | null> {
+    try {
+      const { rows } = await bb.sdk.threads.timeline({
+        threadId: advisorThreadId,
+        segmentLimit: "8",
+      });
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index]!;
+        if (
+          row.kind === "conversation" &&
+          row.role === "assistant" &&
+          row.createdAt >= sentAtMs
+        ) {
+          return row.text;
+        }
+      }
+    } catch {
+      // A failed read is indistinguishable from no reply: the round is lost.
+    }
+    return null;
+  }
+
   async function runReview(
     primaryThreadId: string,
     focus: string,
@@ -2450,6 +2587,13 @@ export default async function plugin(bb: BbPluginApi) {
       openFindingsTruncated: openFindings.length > MAX_PROMPTED_OPEN_FINDINGS,
     });
     let advisor: { id: string; startedWithPrompt: boolean };
+    const sendPrompt = async (threadId: string): Promise<void> => {
+      await bb.sdk.threads.send({
+        threadId,
+        mode: "start",
+        input: [{ type: "text", text: prompt, mentions: [] }],
+      });
+    };
     try {
       advisor = await getOrCreateAdvisorThread(
         primaryThreadId,
@@ -2458,17 +2602,34 @@ export default async function plugin(bb: BbPluginApi) {
         resolved,
       );
       if (!advisor.startedWithPrompt) {
-        await bb.sdk.threads.send({
-          threadId: advisor.id,
-          mode: "start",
-          input: [{ type: "text", text: prompt, mentions: [] }],
-        });
+        try {
+          await sendPrompt(advisor.id);
+        } catch (sendError) {
+          if (!isAlreadyActiveError(sendError)) throw sendError;
+          // The reviewer is still finishing an earlier round. The new prompt
+          // describes newer work, so the old turn gets a short grace and is
+          // then interrupted for the resend.
+          const grace = await waitForAdvisorIdle(
+            advisor.id,
+            BUSY_REVIEWER_GRACE_MS,
+            signal,
+          );
+          if (!grace.idle) {
+            void bb.sdk.threads
+              .stop({ threadId: advisor.id })
+              .catch(() => undefined);
+            await waitForAdvisorIdle(advisor.id, BUSY_REVIEWER_GRACE_MS, signal);
+          }
+          await sendPrompt(advisor.id);
+        }
       }
     } catch (error) {
       return unavailable(
         `the reviewer thread could not be started (${describeError(error)})`,
       );
     }
+    // Replies the reviewer writes at or after this point belong to this round.
+    const sentAtMs = Date.now();
 
     const advisorThreadId = advisor.id;
     const stopAdvisor = (): void => {
@@ -2505,39 +2666,61 @@ export default async function plugin(bb: BbPluginApi) {
           );
         });
     }, finalizeAfterMs);
+    let waited: boolean;
+    let waitError: unknown = null;
     try {
-      await bb.sdk.threads.wait({
-        threadId: advisorThreadId,
-        status: "idle",
+      ({ idle: waited, lastError: waitError } = await waitForAdvisorIdle(
+        advisorThreadId,
         timeoutMs,
-        ...(signal ? { signal } : {}),
-      });
-    } catch (error) {
-      stopAdvisor();
-      // A timeout is self-describing; the exception name and the reviewer's
-      // thread id are developer detail that ends up verbatim in the panel.
-      bb.log.warn(`Advisor review timed out: ${describeError(error)}`);
-      return unavailable(
-        signal?.aborted
-          ? CANCELLED_REASON
-          : `the review did not finish within ${currentSettings.timeoutSeconds}s. Raise "Review timeout" in Settings → Extensions → Advisor if reviews need longer`,
-      );
+        signal,
+      ));
+      // A verdict landing seconds past the deadline is still this round's, so
+      // a straggler gets a short grace before it is interrupted.
+      if (!waited && !signal?.aborted) {
+        ({ idle: waited, lastError: waitError } = await waitForAdvisorIdle(
+          advisorThreadId,
+          LATE_REPLY_GRACE_MS,
+          signal,
+        ));
+      }
     } finally {
       clearTimeout(finalizeTimer);
       signal?.removeEventListener("abort", onAbort);
     }
-    let output: string | null;
-    try {
-      ({ output } = await bb.sdk.threads.output({
-        threadId: advisorThreadId,
-      }));
-    } catch (error) {
-      return unavailable(
-        `the review could not be read back (${describeError(error)})`,
-      );
+    if (!waited) {
+      stopAdvisor();
+      // A timeout is self-describing; the exception name and the reviewer's
+      // thread id are developer detail that ends up verbatim in the panel.
+      bb.log.warn(`Advisor review timed out: ${describeError(waitError)}`);
     }
-    if (!output) {
-      return unavailable("the reviewer finished without returning a review");
+
+    let output: string | null;
+    if (waited) {
+      try {
+        ({ output } = await bb.sdk.threads.output({
+          threadId: advisorThreadId,
+        }));
+      } catch (error) {
+        return unavailable(
+          `the review could not be read back (${describeError(error)})`,
+        );
+      }
+      if (!output) {
+        return unavailable("the reviewer finished without returning a review");
+      }
+    } else {
+      // A wait can fail after the reviewer already emitted its block: a steer
+      // queued as another turn, or a poll dying on a dead socket. The reply is
+      // still on the thread, and persisting it matters even when the caller is
+      // gone — a stored finding reaches the agent as late advice.
+      output = await readAdvisorReplySince(advisorThreadId, sentAtMs);
+      if (output === null) {
+        return unavailable(
+          signal?.aborted
+            ? CANCELLED_REASON
+            : `the review did not finish within ${currentSettings.timeoutSeconds}s. Raise "Review timeout" in Settings → Extensions → Advisor if reviews need longer`,
+        );
+      }
     }
 
     // Repeated advice is recorded as a repeat, never softened: identical advice
