@@ -469,7 +469,7 @@ describe("advisor header verdict", () => {
       },
     });
 
-    const button = await q(slot).findByText("Waiting");
+    const button = await q(slot).findByText("Waiting for child threads");
     expect(button.getAttribute("data-icon")).toBe("advisor-verdict-waiting");
     expect(button.getAttribute("title")).toContain("child threads");
   });

@@ -407,12 +407,6 @@ function useThreadBadges(
   return badges;
 }
 
-const TONE_NEUTRAL = "text-muted-foreground border-border bg-surface-recessed";
-const TONE_DASHED =
-  "border-dashed border-border bg-transparent text-subtle-foreground";
-const TONE_ALARM =
-  "text-destructive-text border-surface-destructive-border bg-surface-destructive";
-
 /**
  * Badge precedence. `latest` is deliberately last: a turn that passes does not
  * close an earlier finding, so showing the newest verdict first would let a
@@ -421,44 +415,44 @@ const TONE_ALARM =
  */
 function badgeStanding(
   data: BadgeData,
-): { kind: Standing; label: string; tone: string; repeatCount: number } | null {
+): { kind: Standing; name: string; label: string; repeatCount: number } | null {
   if (data.lifecycle === "waiting") {
     return {
       kind: "waiting",
+      name: SEVERITY_LABEL.waiting,
       label: SEVERITY_HINT.waiting,
-      tone: TONE_DASHED,
       repeatCount: 0,
     };
   }
   if (data.lifecycle === "waiting-for-children") {
     return {
       kind: "waiting",
+      name: "Waiting for child threads",
       label: WAITING_FOR_CHILDREN_HINT,
-      tone: TONE_DASHED,
       repeatCount: 0,
     };
   }
   if (data.lifecycle === "pending" || data.reviewing) {
     return {
       kind: "reviewing",
+      name: SEVERITY_LABEL.reviewing,
       label: SEVERITY_HINT.reviewing,
-      tone: TONE_DASHED,
       repeatCount: 0,
     };
   }
   if (data.lifecycle === "decided") {
     return {
       kind: "decided",
+      name: SEVERITY_LABEL.decided,
       label: SEVERITY_HINT.decided,
-      tone: TONE_NEUTRAL,
       repeatCount: 0,
     };
   }
   if (data.latestIsUnavailable) {
     return {
       kind: "unavailable",
+      name: SEVERITY_LABEL.unavailable,
       label: `Advisor did not run: ${data.latestUnavailableReason ?? "the review failed"}. This is not an approval.`,
-      tone: TONE_DASHED,
       repeatCount: 0,
     };
   }
@@ -470,8 +464,8 @@ function badgeStanding(
         : "";
     return {
       kind: open.severity,
+      name: SEVERITY_LABEL[open.severity],
       label: `Advisor: ${SEVERITY_LABEL[open.severity]}. ${open.summary}${repeated} ${SEVERITY_HINT[open.severity]}`,
-      tone: open.severity === "blocker" ? TONE_ALARM : TONE_NEUTRAL,
       repeatCount: open.repeatCount,
     };
   }
@@ -479,8 +473,8 @@ function badgeStanding(
   if (!latest) return null;
   return {
     kind: latest.severity,
+    name: SEVERITY_LABEL[latest.severity],
     label: `Advisor: ${SEVERITY_LABEL[latest.severity]}. ${latest.summary} ${SEVERITY_HINT[latest.severity]}`,
-    tone: latest.severity === "blocker" ? TONE_ALARM : TONE_NEUTRAL,
     repeatCount: latest.repeatCount,
   };
 }
@@ -509,7 +503,7 @@ function verdictAction(
   if (!standing) return null;
   const repeat = standing.repeatCount > 1 ? ` ×${standing.repeatCount}` : "";
   return {
-    label: `${SEVERITY_LABEL[standing.kind]}${repeat}`,
+    label: `${standing.name}${repeat}`,
     detail: standing.label,
     icon: verdictIconName(standing.kind),
     variant: standing.kind === "blocker" ? "destructive" : "default",
