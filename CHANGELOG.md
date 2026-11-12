@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.10
+
+- Wait for running child threads before reviewing a completed turn. A turn that ends while threads it started are still working is an honest wait, and bb wakes the agent when they report, so Advisor no longer reviews it on its own: the thread shows **Waiting for child threads**, and the turn that ends once they have finished is reviewed. Every review prompt also lists the thread's running child threads and says that an answer honestly waiting for them is not a finding (#25, reported by @k0d3r1s).
+- Treat a finding chain as one occurrence of a problem. A key joins only a chain that is still open; after the advisor closes a chain, the same key starts a new one, and a round that raises a key while naming it as resolved closes the old occurrence and starts a new chain. The reviewer sees which open findings already reached the agent. "Told before and did not resolve it" now only follows a chain the agent actually left unresolved (#26, reported by @k0d3r1s).
+- Keep a review whose wait fails: a dropped poll is retried inside the budget, a verdict written before a missed deadline is read back from the reviewer thread, and a reviewer still busy with an earlier round gets a short grace before it is interrupted and the new round resent. Thanks to @pavelmaksimov (#24).
+- Build against bb 0.49.1-nightly.43076974886.1 and plugin SDK 0.6.140. The thread header verdict is now a header thread action (on phones it sits at the top of the thread menu), and panels open through the panel controller, replacing two retired APIs.
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later. BB 0.47.1 to 0.48.x keep Advisor 0.1.9.
+
 ## 0.1.9
 
 - Archive and delete the hidden reviewer together with its primary thread. bb now owns the reviewer's lifecycle, so it is archived when the primary is archived and deleted when the primary is deleted, even while Advisor is disabled or not loaded. Deleting a primary used to leave its reviewer behind as an archived thread, and archiving one while Advisor was off left the reviewer live. Reviewers created by earlier versions are still archived by Advisor as before. Thanks to @ymichael (#22).
