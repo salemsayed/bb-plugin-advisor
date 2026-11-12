@@ -16,7 +16,7 @@ Choose a reviewer model and reasoning level for each connected machine, or follo
 
 ## Requirements and usage
 
-Requires BB 0.47.1 or later, plugin SDK 0.6.79 or later, and a configured agent provider capable of running a reviewer in Accept Edits mode. Reviews use your existing provider account and consume additional model usage under that account's billing or subscription limits. No separate Advisor service or account is required.
+Requires BB 0.49.0 or later, plugin SDK 0.6.132 or later, and a configured agent provider capable of running a reviewer in Accept Edits mode. Reviews use your existing provider account and consume additional model usage under that account's billing or subscription limits. No separate Advisor service or account is required.
 
 The reviewer is instructed to inspect without editing, but Accept Edits does permit workspace writes. Claude Code may still request command approval in the hidden reviewer thread; use **Show reviewer** to inspect it if a review stalls. On BB 0.43.1, an existing Codex session needs a fresh model session to gain a newly enabled review tool; **Review now** works immediately.
 

@@ -60,6 +60,7 @@ async function loadAdvisor(
 ) {
   let timelineSeq = 42;
   let currentOutput = output;
+  let runningThreads: RunningThread[] = [];
   const spawn = vi.fn(async (_args: { prompt?: string }) =>
     makeThreadResponse({
       id: "thread-advisor",
@@ -78,6 +79,24 @@ async function loadAdvisor(
       threads: {
         timeline: async () => timeline(timelineSeq),
         get: idleThread,
+        listRunning: async () =>
+          runningThreads.map((thread) => ({ id: thread.id, hostId: "host-test" })),
+        list: async (args?: { threadIds?: readonly string[]; parentThreadId?: string }) =>
+          runningThreads
+            .filter(
+              (thread) =>
+                (args?.threadIds === undefined || args.threadIds.includes(thread.id)) &&
+                (args?.parentThreadId === undefined ||
+                  thread.parentThreadId === args.parentThreadId),
+            )
+            .map((thread) =>
+              makeThreadResponse({
+                id: thread.id,
+                title: thread.title,
+                parentThreadId: thread.parentThreadId,
+                status: thread.status,
+              }),
+            ),
         spawn,
         wait: async () => ({ matched: true }),
         output: async () => ({ output: currentOutput }),
@@ -104,7 +123,17 @@ async function loadAdvisor(
     setAdvisorOutput(next: string) {
       currentOutput = next;
     },
+    setRunningThreads(next: RunningThread[]) {
+      runningThreads = next;
+    },
   };
+}
+
+interface RunningThread {
+  id: string;
+  title: string;
+  parentThreadId: string | null;
+  status: "starting" | "active" | "idle";
 }
 
 async function loadAutoAdvisor(output: string) {
@@ -1807,7 +1836,9 @@ describe("post-turn review scope", () => {
       }),
       lastAssistantText: "Turn one done.",
     });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() =>
+      expect(harness.sdk.callsTo("threads.timeline")).toHaveLength(1),
+    );
 
     // The next turn starts while the post-turn review of turn one is still running.
     setTimelineSeq(43);
@@ -1818,11 +1849,11 @@ describe("post-turn review scope", () => {
     );
     releaseFirstWait();
     await postTurn;
+    const result = await toolResult;
 
     // A second review really ran, and it is the later turn's own review — a
     // joined earlier-turn review would not be recorded as a repeat.
     expect(harness.sdk.callsTo("threads.output")).toHaveLength(2);
-    const result = await toolResult;
     expect(result).toContain("Advisor blocker:");
     // Turn one's review was still queued, so the agent was never told it.
     expect(result).not.toContain("still unresolved");
@@ -2440,7 +2471,7 @@ END_ADVISOR_RESULT`;
     expect(sent.reviews[0]?.sentAt).toEqual(expect.any(Number));
   });
 
-  it("closes a finding the advisor says it verified, and reopens it on regression", async () => {
+  it("closes a finding the advisor says it verified, and raises a recurrence as a new finding", async () => {
     const keyed = (severity: string, resolved: string) => `ADVISOR_RESULT
 severity: ${severity}
 key: missing-test-run
@@ -2490,19 +2521,19 @@ END_ADVISOR_RESULT`);
       ),
     ).toBe(true);
 
-    // Then the same defect comes back. An advisor closure is provisional, so
-    // a regression must resurface rather than stay quietly closed.
     setTimelineSeq(44);
     setAdvisorOutput(keyed("blocker", "none"));
-    await harness.callAgentTool(
+    const recurrence = await harness.callAgentTool(
       "advisor_review",
       { focus: "Third pass." },
       { threadId: "thread-primary" },
     );
     const regressed = (await harness.callRpc("threadBadge", {
       threadId: "thread-primary",
-    })) as { open: { severity: string } | null };
-    expect(regressed.open?.severity).toBe("blocker");
+    })) as { open: { severity: string; chainId: number; repeatCount: number } | null };
+    expect(regressed.open).toMatchObject({ severity: "blocker", repeatCount: 1 });
+    expect(regressed.open?.chainId).not.toBe(raised.open?.chainId);
+    expect(recurrence).not.toContain("This repeats advice");
   });
 
   it("ignores a close for a key that is not open on the thread", async () => {
@@ -3704,3 +3735,220 @@ describe("advisor_review registration", () => {
     });
   });
 });
+
+describe("child threads still running (#25)", () => {
+  const primary = makeThreadResponse({
+    id: "thread-primary",
+    projectId: "project-test",
+    environmentId: "environment-test",
+    providerId: "codex",
+    visibility: "visible",
+  });
+  const closureReviewer: RunningThread = {
+    id: "thread-closure",
+    title: "Closure reviewer",
+    parentThreadId: "thread-primary",
+    status: "active",
+  };
+
+  async function lifecycle(harness: AdvisorHarness) {
+    return ((await harness.callRpc("threadBadge", {
+      threadId: "thread-primary",
+    })) as { lifecycle: string }).lifecycle;
+  }
+
+  it("waits instead of reviewing a turn that ended while its child threads run", async () => {
+    const { harness, spawn, setRunningThreads } = await loadAutoAdvisor(BLOCKER_OUTPUT);
+    setRunningThreads([
+      closureReviewer,
+      { id: "thread-elsewhere", title: "Unrelated", parentThreadId: "thread-other", status: "active" },
+    ]);
+    await harness.emitThreadEvent("thread.idle", {
+      thread: primary,
+      lastAssistantText: "Both reviewers are still running; bb will wake me when they report.",
+    });
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(await lifecycle(harness)).toBe("waiting-for-children");
+    expect(
+      ((await harness.callRpc("pendingAdvice", { threadId: "thread-primary" })) as {
+        advice: unknown;
+      }).advice,
+    ).toBeNull();
+  });
+
+  it("ignores children that are idle or belong to another thread", async () => {
+    const { harness, spawn, setRunningThreads } = await loadAutoAdvisor(BLOCKER_OUTPUT);
+    setRunningThreads([
+      { ...closureReviewer, status: "idle" },
+      { id: "thread-elsewhere", title: "Unrelated", parentThreadId: "thread-other", status: "active" },
+    ]);
+    await harness.emitThreadEvent("thread.idle", {
+      thread: primary,
+      lastAssistantText: "Done.",
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(await lifecycle(harness)).toBe("changes-requested");
+  });
+
+  it("stops waiting when the last child settles, without reviewing the waiting answer", async () => {
+    const { harness, spawn, setRunningThreads } = await loadAutoAdvisor(BLOCKER_OUTPUT);
+    setRunningThreads([closureReviewer]);
+    await harness.emitThreadEvent("thread.idle", {
+      thread: primary,
+      lastAssistantText: "The closure reviewer is still running.",
+    });
+    expect(await lifecycle(harness)).toBe("waiting-for-children");
+
+    setRunningThreads([]);
+    await harness.emitThreadEvent("thread.idle", {
+      thread: makeThreadResponse({
+        id: "thread-closure",
+        parentThreadId: "thread-primary",
+        originPluginId: "other-plugin",
+      }),
+      lastAssistantText: "No problems found.",
+    });
+
+    expect(await lifecycle(harness)).toBe("unreviewed");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("reviews the turn that ends after the children reported", async () => {
+    const { harness, spawn, setRunningThreads, setTimelineSeq } =
+      await loadAutoAdvisor(BLOCKER_OUTPUT);
+    setRunningThreads([closureReviewer]);
+    await harness.emitThreadEvent("thread.idle", {
+      thread: primary,
+      lastAssistantText: "The closure reviewer is still running.",
+    });
+
+    setRunningThreads([]);
+    await harness.emitThreadEvent("thread.active", { thread: primary });
+    expect(await lifecycle(harness)).not.toBe("waiting-for-children");
+    setTimelineSeq(50);
+    await harness.emitThreadEvent("thread.idle", {
+      thread: primary,
+      lastAssistantText: "The closure reviewer found no problems; the plan is done.",
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(await lifecycle(harness)).toBe("changes-requested");
+  });
+
+  it("reviews as before when the child threads cannot be listed", async () => {
+    const { harness, spawn } = await loadAutoAdvisor(BLOCKER_OUTPUT);
+    harness.sdk.stub("threads.listRunning", async () => {
+      throw new Error("listing is down");
+    });
+    await harness.emitThreadEvent("thread.idle", {
+      thread: primary,
+      lastAssistantText: "Done.",
+    });
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells a tool review which child threads are still running", async () => {
+    const { harness, spawn, setRunningThreads } = await loadAdvisor(BLOCKER_OUTPUT);
+    setRunningThreads([closureReviewer]);
+    await harness.callAgentTool(
+      "advisor_review",
+      { focus: "Plan revised; reviewer running." },
+      { threadId: "thread-primary" },
+    );
+
+    const prompt = spawn.mock.calls[0]![0].prompt ?? "";
+    expect(prompt).toContain('- "Closure reviewer" (thread-closure)');
+    expect(prompt).toContain("is the correct state and is not a finding");
+  });
+});
+
+describe("separate occurrences of one kind of finding (#26)", () => {
+  const verdict = (severity: string, summary: string, resolved: string) => `ADVISOR_RESULT
+severity: ${severity}
+key: ${severity === "pass" ? "none" : "plan-review-incomplete"}
+summary: ${summary}
+details:
+- Wait for the reviewers and act on what they report.
+resolved: ${resolved}
+END_ADVISOR_RESULT`;
+
+  async function round(
+    host: Awaited<ReturnType<typeof loadAdvisor>>,
+    seq: number,
+    output: string,
+  ): Promise<string> {
+    host.setTimelineSeq(seq);
+    host.setAdvisorOutput(output);
+    return (await host.harness.callAgentTool(
+      "advisor_review",
+      { focus: `Round at ${seq}.` },
+      { threadId: "thread-primary" },
+    )) as string;
+  }
+
+  async function chains(harness: AdvisorHarness) {
+    return ((await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as {
+      reviews: { chainId: number; repeatCount: number; closedSeq: number | null; summary: string }[];
+    }).reviews;
+  }
+
+  it("still chains the same unresolved occurrence and says the agent was told", async () => {
+    const host = await loadAdvisor(verdict("concern", "The closure review is still running", "none"));
+    await round(host, 42, verdict("concern", "The closure review is still running", "none"));
+    const second = await round(host, 43, verdict("concern", "The closure review is still running, still", "none"));
+
+    expect(second).toContain("This repeats advice already given earlier");
+    expect((await chains(host.harness))[0]).toMatchObject({ repeatCount: 2 });
+  });
+
+  it("starts a new finding when the reviewer resolves the old occurrence and raises the same key", async () => {
+    const host = await loadAdvisor(verdict("concern", "The closure review is still running", "none"));
+    await round(host, 42, verdict("concern", "The closure review is still running", "none"));
+    const second = await round(
+      host,
+      43,
+      verdict("concern", "The revised plan's review is still in progress", "plan-review-incomplete"),
+    );
+
+    expect(second).not.toContain("This repeats advice");
+    const rows = await chains(host.harness);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      summary: "The revised plan's review is still in progress",
+      repeatCount: 1,
+      closedSeq: null,
+    });
+    expect(rows[1]).toMatchObject({
+      summary: "The closure review is still running",
+      closedSeq: 43,
+    });
+    const badge = (await host.harness.callRpc("threadBadge", {
+      threadId: "thread-primary",
+    })) as { open: { chainId: number; repeatCount: number } | null };
+    expect(badge.open).toMatchObject({ chainId: rows[0]!.chainId, repeatCount: 1 });
+  });
+
+  it("starts a new finding when the same key comes back after the advisor closed it", async () => {
+    const host = await loadAdvisor(verdict("concern", "The closure review is still running", "none"));
+    await round(host, 42, verdict("concern", "The closure review is still running", "none"));
+    await round(host, 43, verdict("pass", "All reviewers reported", "plan-review-incomplete"));
+    const recurrence = await round(
+      host,
+      44,
+      verdict("concern", "The rollback section's review is still running", "none"),
+    );
+
+    expect(recurrence).not.toContain("This repeats advice");
+    const rows = (await chains(host.harness)).filter((row) => row.summary !== "All reviewers reported");
+    expect(rows.map((row) => [row.summary, row.repeatCount, row.closedSeq])).toEqual([
+      ["The rollback section's review is still running", 1, null],
+      ["The closure review is still running", 1, 43],
+    ]);
+  });
+});
+

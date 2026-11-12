@@ -24,6 +24,8 @@ None.
 
 If you have re-checked one of those and it is genuinely addressed now, list its key on the "resolved:" line. Only close a key you actually verified in this round: not mentioning a finding never closes it, and you must not close one you did not check. Closing a key that is not listed above does nothing.
 
+Each open finding is one occurrence of a problem, not a kind of problem. Reuse its key only when your finding is that same occurrence and it is still unresolved. If that occurrence was dealt with and the same kind of problem has come up again in newer work, it is a new finding: list the old key on the "resolved:" line and raise the new one. It may keep the same key, because a key that is both raised and resolved in one result starts a new finding.
+
 Focus supplied by the primary agent:
 No additional focus was supplied.
 
@@ -39,7 +41,7 @@ The block below is read by a program, not by a person, so its shape is not prose
 
 ADVISOR_RESULT
 severity: pass|nit|concern|blocker
-key: a short stable slug naming the defect itself, anchored to where it lives, e.g. server-ts-runreview-timeout-untested. Use the SAME key whenever you raise the same underlying defect again, even if you reword it or rate it differently. Use "none" for a pass.
+key: a short stable slug naming the defect itself, anchored to where it lives, e.g. server-ts-runreview-timeout-untested. Use the SAME key whenever you raise the same unresolved defect again, even if you reword it or rate it differently. Use "none" for a pass.
 summary: one concise line
 details:
 - concrete evidence and a specific correction, or "none"

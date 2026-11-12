@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import { experimental_useAppPanel } from "@get-bb/plugin-sdk/app";
+import type { PluginThreadActionTarget } from "@get-bb/plugin-sdk/app";
 
 const app = await loadPluginApp(() => import("./app"));
 
@@ -17,7 +19,32 @@ function q(slot: { container: HTMLElement }) {
   return within(slot.container);
 }
 
-const badgeSlot = app.threadHeaderActions[0]!;
+const verdictAction = app.threadActions.find((action) => action.id === "verdict")!;
+
+function VerdictProbe({ threadId }: { threadId: string }) {
+  const data = verdictAction.useData!({ threadIds: [threadId] });
+  const panel = experimental_useAppPanel();
+  const action = verdictAction.item({
+    thread: { id: threadId } as unknown as PluginThreadActionTarget,
+    data,
+    sdk: undefined as never,
+    navigate: undefined as never,
+    experimental_panel: panel,
+  });
+  if (!action) return null;
+  return (
+    <button
+      type="button"
+      title={action.detail}
+      data-icon={action.icon}
+      data-variant={action.variant}
+      onClick={() => void action.run({ requestRename: () => undefined })}
+    >
+      {action.label}
+    </button>
+  );
+}
+const verdictSlot = { component: VerdictProbe };
 const panelTab = app.tabs.find((tab) => tab.id === "reviews")!;
 // TS cannot narrow the tab union on its nested `context.kind`; the
 // registration test below checks the shape this assumes.
@@ -25,11 +52,7 @@ const panelSlot = panelTab as Extract<
   typeof panelTab,
   { context: { kind: "thread" }; availability: "action" }
 >;
-const badgeProps = {
-  threadId: "t1",
-  projectId: "p1",
-  isCompactViewport: false,
-};
+const badgeProps = { threadId: "t1" };
 
 function emptyBadge() {
   return {
@@ -370,11 +393,19 @@ describe("advisor thread switch", () => {
   });
 });
 
-describe("advisor header badge", () => {
+describe("advisor header verdict", () => {
+  it("registers a header thread action and its verdict glyphs instead of the retired header slot", () => {
+    expect(app.threadHeaderActions).toHaveLength(0);
+    expect(verdictAction).toMatchObject({ id: "verdict", placement: "header" });
+    expect(app.icons.map((icon) => icon.name).sort()).toEqual(
+      ["blocker", "concern", "decided", "nit", "pass", "reviewing", "unavailable", "waiting"]
+        .map((standing) => `advisor-verdict-${standing}`)
+        .sort(),
+    );
+  });
+
   it("keeps advertising an open blocker after a later turn passes", async () => {
-    // The whole point: a clean turn does not close an earlier finding, and the
-    // finding is still being fed back to the agent.
-    const slot = renderSlot(badgeSlot, badgeProps, {
+    const slot = renderSlot(verdictSlot, badgeProps, {
       rpc: {
         threadBadge: () => ({
           ...emptyBadge(),
@@ -393,13 +424,15 @@ describe("advisor header badge", () => {
       },
     });
 
-    expect(await q(slot).findByText("Must fix")).toBeTruthy();
-    expect(q(slot).queryByText("No issues")).toBeNull();
-    expect(await q(slot).findByText("×3")).toBeTruthy();
+    const button = await q(slot).findByText("Must fix ×3");
+    expect(button.getAttribute("data-icon")).toBe("advisor-verdict-blocker");
+    expect(button.getAttribute("data-variant")).toBe("destructive");
+    expect(button.getAttribute("title")).toContain("Migration is not atomic");
+    expect(q(slot).queryByText(/No issues/)).toBeNull();
   });
 
   it("shows a failed review ahead of an open finding", async () => {
-    const slot = renderSlot(badgeSlot, badgeProps, {
+    const slot = renderSlot(verdictSlot, badgeProps, {
       rpc: {
         threadBadge: () => ({
           ...emptyBadge(),
@@ -417,7 +450,69 @@ describe("advisor header badge", () => {
     });
 
     expect(await q(slot).findByText("Didn't run")).toBeTruthy();
-    expect(q(slot).queryByText("Must fix")).toBeNull();
+    expect(q(slot).queryByText(/Must fix/)).toBeNull();
+  });
+
+  it("says it waits for child threads instead of advertising an older verdict", async () => {
+    const slot = renderSlot(verdictSlot, badgeProps, {
+      rpc: {
+        threadBadge: () => ({
+          ...emptyBadge(),
+          open: {
+            chainId: 7,
+            severity: "concern" as const,
+            summary: "Older finding",
+            repeatCount: 1,
+          },
+          lifecycle: "waiting-for-children" as const,
+        }),
+      },
+    });
+
+    const button = await q(slot).findByText("Waiting for child threads");
+    expect(button.getAttribute("data-icon")).toBe("advisor-verdict-waiting");
+    expect(button.getAttribute("title")).toContain("child threads");
+  });
+
+  it("opens the Advisor tab through the panel controller", async () => {
+    const slot = renderSlot(verdictSlot, badgeProps, {
+      rpc: {
+        threadBadge: () => ({
+          ...emptyBadge(),
+          latest: { severity: "pass" as const, summary: "Looks correct", repeatCount: 1 },
+          lifecycle: "approved" as const,
+        }),
+      },
+    });
+
+    fireEvent.click(await q(slot).findByText("No issues"));
+    expect(slot.inspection.experimental_panelCalls).toEqual([
+      {
+        method: "openTab",
+        options: {
+          tab: { id: "reviews", context: { kind: "thread" }, availability: "action" },
+        },
+      },
+    ]);
+  });
+
+  it("refetches its thread's verdict when the server says it changed", async () => {
+    let severity: "pass" | "concern" = "pass";
+    const slot = renderSlot(verdictSlot, badgeProps, {
+      rpc: {
+        threadBadge: () => ({
+          ...emptyBadge(),
+          latest: { severity, summary: "Latest", repeatCount: 1 },
+        }),
+      },
+    });
+
+    expect(await q(slot).findByText("No issues")).toBeTruthy();
+    severity = "concern";
+    await slot.behavior.emitRealtime("thread-changed", { threadId: "other" });
+    expect(q(slot).queryByText("Should fix")).toBeNull();
+    await slot.behavior.emitRealtime("thread-changed", { threadId: "t1" });
+    expect(await q(slot).findByText("Should fix")).toBeTruthy();
   });
 });
 
@@ -433,7 +528,7 @@ describe("advisor panel", () => {
   });
 
   it("counts open findings without counting clean turns", async () => {
-    const slot = renderSlot(panelSlot, { threadId: "t1", params: null }, {
+    const slot = renderSlot(panelSlot, { threadId: "t1", environment: null, params: null }, {
       rpc: {
         threadReviews: () =>
           panel([
@@ -459,7 +554,7 @@ describe("advisor panel", () => {
   });
 
   it("says what happened to each finding", async () => {
-    const slot = renderSlot(panelSlot, { threadId: "t1", params: null }, {
+    const slot = renderSlot(panelSlot, { threadId: "t1", environment: null, params: null }, {
       rpc: {
         threadReviews: () =>
           panel([
@@ -497,7 +592,7 @@ describe("advisor panel", () => {
   });
 
   it("attributes a settled finding to whoever settled it", async () => {
-    const slot = renderSlot(panelSlot, { threadId: "t1", params: null }, {
+    const slot = renderSlot(panelSlot, { threadId: "t1", environment: null, params: null }, {
       rpc: {
         threadReviews: () =>
           panel([
@@ -531,7 +626,7 @@ describe("advisor panel", () => {
   });
 
   it("starts a corrective turn instead of letting the user self-certify a fix", async () => {
-    const slot = renderSlot(panelSlot, { threadId: "t1", params: null }, {
+    const slot = renderSlot(panelSlot, { threadId: "t1", environment: null, params: null }, {
       rpc: {
         threadReviews: () =>
           panel([review({ id: 9, chainId: 5, severity: "blocker" })]),
@@ -556,7 +651,7 @@ describe("advisor panel", () => {
   });
 
   it("asks for a review and refuses to double-fire while one is running", async () => {
-    const slot = renderSlot(panelSlot, { threadId: "t1", params: null }, {
+    const slot = renderSlot(panelSlot, { threadId: "t1", environment: null, params: null }, {
       rpc: {
         threadReviews: () => panel([]),
         requestReview: () => ({ started: true, waiting: false }),
@@ -573,7 +668,7 @@ describe("advisor panel", () => {
   });
 
   it("disables the trigger while the server reports a review in flight", async () => {
-    const slot = renderSlot(panelSlot, { threadId: "t1", params: null }, {
+    const slot = renderSlot(panelSlot, { threadId: "t1", environment: null, params: null }, {
       rpc: {
         threadReviews: () =>
           panel([], { reviewing: true, lifecycle: "pending" }),
@@ -587,7 +682,7 @@ describe("advisor panel", () => {
   it("lets the user overrule a finding by chain", async () => {
     // Repeats can only escalate on their own, so this is the only way a wrong
     // finding stops re-entering the agent's instructions.
-    const slot = renderSlot(panelSlot, { threadId: "t1", params: null }, {
+    const slot = renderSlot(panelSlot, { threadId: "t1", environment: null, params: null }, {
       rpc: {
         threadReviews: () =>
           panel([review({ id: 9, chainId: 5, severity: "blocker" })]),

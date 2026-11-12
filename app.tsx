@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { withTimeout } from "./src/async.js";
 import {
   definePluginApp,
-  useBbNavigate,
+  experimental_useAppPanel,
   useComposer,
   useRealtime,
   useRealtimeConnectionState,
@@ -11,13 +11,23 @@ import {
   ThreadChat,
 } from "@get-bb/plugin-sdk/app";
 import type {
+  ExperimentalPanelController,
   ExperimentalThreadActionTabProps,
   PluginRpcResult,
-  PluginThreadHeaderActionProps,
+  PluginThreadAction,
 } from "@get-bb/plugin-sdk/app";
 import type { ModelConfiguration, rpcContract } from "./server";
 
 const PANEL_ACTION_ID = "reviews";
+const ADVISOR_TAB = {
+  id: PANEL_ACTION_ID,
+  context: { kind: "thread" },
+  availability: "action",
+} as const;
+
+function openAdvisorPanel(panel: ExperimentalPanelController): void {
+  panel.openTab({ tab: ADVISOR_TAB });
+}
 
 /**
  * Every shape below is inferred from the server's own contract rather than
@@ -46,6 +56,7 @@ type Decision = PanelReview["decision"];
 const REVIEW_LIFECYCLE_LABEL: Record<ReviewLifecycle, string> = {
   unreviewed: "Not reviewed",
   waiting: "Waiting for completed turn",
+  "waiting-for-children": "Waiting for child threads",
   pending: "Review pending",
   approved: "Approved",
   "changes-requested": "Changes requested",
@@ -159,6 +170,9 @@ const SEVERITY_HINT: Record<Standing, string> = {
   waiting: "Advisor will review when the current agent turn has a completed answer.",
   decided: "The user overruled or accepted the latest finding. Advisor did not verify a fix.",
 };
+
+const WAITING_FOR_CHILDREN_HINT =
+  "Advisor reviews this turn once the child threads it started have finished and reported back.";
 
 /** Absolute time is noise in a thread you are reading now; elapsed time is not. */
 function formatWhen(epochMs: number, now: number): string {
@@ -314,19 +328,18 @@ function useThreadAdvisor<
     "thread-changed",
     useCallback(
       (payload: unknown) => {
-        const target =
-          typeof payload === "object" && payload !== null
-            ? (payload as { threadId?: unknown }).threadId
-            : undefined;
-        if (target === threadId) void load();
+        if (changedThreadId(payload) === threadId) void load();
       },
       [threadId, load],
     ),
   );
 
-  // Signals are fire-and-forget: anything published while the socket was down
-  // is gone. Reconcile on every transition back to `connected`, or a verdict
-  // that landed during the outage stays invisible until a full remount.
+  useReloadOnReconnect(load);
+
+  return { data, error, reload: load, replace };
+}
+
+function useReloadOnReconnect(load: () => Promise<void>): void {
   const connection = useRealtimeConnectionState();
   const [wasConnected, setWasConnected] = useState(connection === "connected");
   useEffect(() => {
@@ -338,47 +351,61 @@ function useThreadAdvisor<
     setWasConnected(true);
     void load();
   }, [connection, wasConnected, load]);
-
-  return { data, error, reload: load, replace };
 }
 
-function AdvisorHeaderBadge({
-  threadId,
-  isCompactViewport,
-}: PluginThreadHeaderActionProps) {
-  const navigate = useBbNavigate();
-  const { data } = useThreadAdvisor<"threadBadge">(threadId, "threadBadge");
-  if (!data) return null;
+function changedThreadId(payload: unknown): string | undefined {
+  const target =
+    typeof payload === "object" && payload !== null
+      ? (payload as { threadId?: unknown }).threadId
+      : undefined;
+  return typeof target === "string" ? target : undefined;
+}
 
-  const standing = badgeStanding(data);
-  if (!standing) return null;
+function useThreadBadges(
+  threadIds: readonly string[],
+): Readonly<Record<string, BadgeData>> {
+  const rpc = useRpc<Contract>();
+  const [badges, setBadges] = useState<Readonly<Record<string, BadgeData>>>({});
+  const requests = useRef(new Map<string, number>());
+  const idsKey = threadIds.join("\n");
+  const ids = useMemo(() => (idsKey === "" ? [] : idsKey.split("\n")), [idsKey]);
 
-  return (
-    <button
-      type="button"
-      title={standing.label}
-      aria-label={standing.label}
-      onClick={() => navigate.openThreadPanel({ actionId: PANEL_ACTION_ID })}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs hover:bg-state-hover ${standing.tone}`}
-    >
-      {/* The glyph differs per standing, so the compact icon-only form still
-          distinguishes a blocker from a nit without relying on color. */}
-      <SeverityGlyph standing={standing.kind} className="size-3.5 shrink-0" />
-      {isCompactViewport ? null : <span>{SEVERITY_LABEL[standing.kind]}</span>}
-      {standing.repeatCount > 1 ? (
-        <span className="text-2xs font-semibold tabular-nums opacity-85">
-          ×{standing.repeatCount}
-        </span>
-      ) : null}
-    </button>
+  const loadOne = useCallback(
+    async (threadId: string) => {
+      const request = (requests.current.get(threadId) ?? 0) + 1;
+      requests.current.set(threadId, request);
+      try {
+        const result = await rpc.call("threadBadge", { threadId });
+        if (requests.current.get(threadId) !== request) return;
+        setBadges((current) => ({ ...current, [threadId]: result }));
+      } catch {
+        return;
+      }
+    },
+    [rpc],
   );
-}
+  const loadAll = useCallback(async () => {
+    await Promise.all(ids.map(loadOne));
+  }, [ids, loadOne]);
 
-const TONE_NEUTRAL = "text-muted-foreground border-border bg-surface-recessed";
-const TONE_DASHED =
-  "border-dashed border-border bg-transparent text-subtle-foreground";
-const TONE_ALARM =
-  "text-destructive-text border-surface-destructive-border bg-surface-destructive";
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
+
+  useRealtime(
+    "thread-changed",
+    useCallback(
+      (payload: unknown) => {
+        const target = changedThreadId(payload);
+        if (target !== undefined && ids.includes(target)) void loadOne(target);
+      },
+      [ids, loadOne],
+    ),
+  );
+  useReloadOnReconnect(loadAll);
+
+  return badges;
+}
 
 /**
  * Badge precedence. `latest` is deliberately last: a turn that passes does not
@@ -388,36 +415,44 @@ const TONE_ALARM =
  */
 function badgeStanding(
   data: BadgeData,
-): { kind: Standing; label: string; tone: string; repeatCount: number } | null {
+): { kind: Standing; name: string; label: string; repeatCount: number } | null {
   if (data.lifecycle === "waiting") {
     return {
       kind: "waiting",
+      name: SEVERITY_LABEL.waiting,
       label: SEVERITY_HINT.waiting,
-      tone: TONE_DASHED,
+      repeatCount: 0,
+    };
+  }
+  if (data.lifecycle === "waiting-for-children") {
+    return {
+      kind: "waiting",
+      name: "Waiting for child threads",
+      label: WAITING_FOR_CHILDREN_HINT,
       repeatCount: 0,
     };
   }
   if (data.lifecycle === "pending" || data.reviewing) {
     return {
       kind: "reviewing",
+      name: SEVERITY_LABEL.reviewing,
       label: SEVERITY_HINT.reviewing,
-      tone: TONE_DASHED,
       repeatCount: 0,
     };
   }
   if (data.lifecycle === "decided") {
     return {
       kind: "decided",
+      name: SEVERITY_LABEL.decided,
       label: SEVERITY_HINT.decided,
-      tone: TONE_NEUTRAL,
       repeatCount: 0,
     };
   }
   if (data.latestIsUnavailable) {
     return {
       kind: "unavailable",
+      name: SEVERITY_LABEL.unavailable,
       label: `Advisor did not run: ${data.latestUnavailableReason ?? "the review failed"}. This is not an approval.`,
-      tone: TONE_DASHED,
       repeatCount: 0,
     };
   }
@@ -429,8 +464,8 @@ function badgeStanding(
         : "";
     return {
       kind: open.severity,
+      name: SEVERITY_LABEL[open.severity],
       label: `Advisor: ${SEVERITY_LABEL[open.severity]}. ${open.summary}${repeated} ${SEVERITY_HINT[open.severity]}`,
-      tone: open.severity === "blocker" ? TONE_ALARM : TONE_NEUTRAL,
       repeatCount: open.repeatCount,
     };
   }
@@ -438,9 +473,41 @@ function badgeStanding(
   if (!latest) return null;
   return {
     kind: latest.severity,
+    name: SEVERITY_LABEL[latest.severity],
     label: `Advisor: ${SEVERITY_LABEL[latest.severity]}. ${latest.summary} ${SEVERITY_HINT[latest.severity]}`,
-    tone: latest.severity === "blocker" ? TONE_ALARM : TONE_NEUTRAL,
     repeatCount: latest.repeatCount,
+  };
+}
+
+const STANDINGS: readonly Standing[] = [
+  "blocker",
+  "concern",
+  "nit",
+  "pass",
+  "unavailable",
+  "reviewing",
+  "waiting",
+  "decided",
+];
+
+function verdictIconName(standing: Standing): string {
+  return `advisor-verdict-${standing}`;
+}
+
+function verdictAction(
+  badge: BadgeData | undefined,
+  panel: ExperimentalPanelController,
+): PluginThreadAction | null {
+  if (!badge) return null;
+  const standing = badgeStanding(badge);
+  if (!standing) return null;
+  const repeat = standing.repeatCount > 1 ? ` ×${standing.repeatCount}` : "";
+  return {
+    label: `${standing.name}${repeat}`,
+    detail: standing.label,
+    icon: verdictIconName(standing.kind),
+    variant: standing.kind === "blocker" ? "destructive" : "default",
+    run: () => openAdvisorPanel(panel),
   };
 }
 
@@ -661,7 +728,7 @@ function ThreadAdvisorSwitch({ threadId }: { threadId: string }) {
 /** Show pending advice before it is sent into the next turn. */
 function AdvisorComposerBanner() {
   const composer = useComposer();
-  const navigate = useBbNavigate();
+  const panel = experimental_useAppPanel();
   const rpc = useRpc<Contract>();
   const scope = composer.scope;
   const threadId = scope.kind === "thread" ? scope.threadId : null;
@@ -760,7 +827,7 @@ function AdvisorComposerBanner() {
         </button>
         <button
           type="button"
-          onClick={() => navigate.openThreadPanel({ actionId: PANEL_ACTION_ID })}
+          onClick={() => openAdvisorPanel(panel)}
           className="h-7 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-state-hover"
         >
           View review
@@ -1561,10 +1628,24 @@ export default definePluginApp((app) => {
     component: AdvisorPanel,
   });
 
-  app.slots.experimental_threadHeaderAction({
+  for (const standing of STANDINGS) {
+    app.experimental_icons.register({
+      name: verdictIconName(standing),
+      component: ({ className }) => (
+        <SeverityGlyph standing={standing} className={className} />
+      ),
+    });
+  }
+
+  app.slots.experimental_threadAction<Readonly<Record<string, BadgeData>>>({
     id: "verdict",
     title: "Advisor verdict",
-    component: AdvisorHeaderBadge,
+    icon: "ShieldCheck",
+    group: "advisor",
+    placement: "header",
+    useData: ({ threadIds }) => useThreadBadges(threadIds),
+    item: ({ thread, data, experimental_panel }) =>
+      verdictAction(data[thread.id], experimental_panel),
   });
 
   app.composer.customize({

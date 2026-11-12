@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/salemsayed/bb-plugin-advisor/actions/workflows/ci.yml/badge.svg)](https://github.com/salemsayed/bb-plugin-advisor/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![bb ≥ 0.47.1](https://img.shields.io/badge/bb-%E2%89%A5%200.47.1-8b5cf6.svg)](#install)
+[![bb ≥ 0.49.0](https://img.shields.io/badge/bb-%E2%89%A5%200.49.0-8b5cf6.svg)](#install)
 
 <p align="center">
   <img src="./docs/media/advisor-hero.svg" alt="Advisor — an independent reviewer on every coding thread" width="100%" />
@@ -43,9 +43,10 @@ outside opinion without changing bb core:
   different context, optionally a different model per machine, spawned into the
   same environment so it can inspect the actual workspace.
 - **Persistent.** Findings are chains with memory, not one-off comments. The
-  same defect raised again joins its chain, counts as *re-raised*, and is held
-  at its strongest severity — repetition means the agent was told and did not
-  act, so a finding can escalate but never soften.
+  same unresolved defect raised again joins its chain, counts as *re-raised*,
+  and is held at its strongest severity — repetition means the agent was told
+  and did not act, so a finding can escalate but never soften. A new
+  occurrence of a problem that was already dealt with starts its own chain.
 - **Fail-closed.** A timeout, a provider that cannot host a reviewer, or a
   reviewer that fails to start is reported as `Advisor unavailable` with the
   reason, and recorded as an incident. It is deliberately not a pass.
@@ -62,13 +63,23 @@ Advisor reviews a thread through three complementary paths:
    public answer, the reviewer checks that answer and the work it claims.
    Actionable late findings are sent to the agent when its next turn starts.
    A turn that already ran the tool is not reviewed again after it goes idle.
+   A turn that ends while child threads it started are still running is not
+   reviewed on its own: waiting for them is the correct next step, and bb
+   wakes the agent when they report. Advisor reviews the turn that ends once
+   they have finished.
 3. **Review now** — the thread panel can start the same review on demand. If
    the agent is still working, Advisor waits for the completed public answer
    instead of treating the missing answer as a finding.
 
-The thread header advertises the review lifecycle independently from the agent
-turn: **Waiting for completed turn**, **Review pending**, **Approved**,
-**Changes requested**, or **Review unavailable**.
+A button in the thread header advertises the review lifecycle independently
+from the agent turn and opens the Advisor tab: **Waiting for completed turn**,
+**Waiting for child threads**, **Review pending**, **Approved**, **Changes
+requested**, or **Review unavailable**. On a phone it sits at the top of the
+thread menu.
+
+Every review is told which of the thread's child threads are still running,
+and that an answer honestly waiting for them is not a finding; only a claim that their work is done, or a conclusion that
+depends on results they have not returned, is.
 
 A late finding stays attached to the completed turn and offers **Fix in new
 turn**, which starts an agent-only corrective follow-up with the finding
@@ -81,7 +92,7 @@ Advice older than 24 hours is retired rather than sent stale.
 
 ## Install
 
-Requires bb ≥ 0.47.1 and plugin SDK ≥ 0.6.79. Older bb releases keep Advisor 0.1.4.
+Requires bb ≥ 0.49.0 and plugin SDK ≥ 0.6.132. bb 0.47.1 to 0.48.x keep Advisor 0.1.9; older bb releases keep Advisor 0.1.4.
 
 From GitHub:
 
@@ -192,8 +203,12 @@ The reviewer reads it before each review; the filename is configurable.
 ## The life of a finding
 
 The advisor assigns each finding a stable `key` naming the defect itself. A
-later round carrying the same key joins that finding's chain even when it is
-reworded or rated differently.
+later round carrying the same key joins that finding's open chain even when it
+is reworded or rated differently. A chain is one occurrence of a problem, not
+a kind of problem: once the advisor has closed it, the same key starts a new
+chain, and a round that names a key on its `resolved:` line while raising the
+same key closes the old occurrence and starts a new one. Only a chain that is
+still open can make the agent hear "this repeats advice already given".
 
 ```mermaid
 stateDiagram-v2
@@ -204,7 +219,7 @@ stateDiagram-v2
     Sent --> Reraised : flagged again
     Reraised --> Sent : held at strongest severity
     Sent --> Closed : advisor re-checks and closes
-    Closed --> Reraised : same key returns
+    Closed --> Queued : same key, new occurrence
     Sent --> Decided : user rules not an issue or won't fix
     Closed --> [*]
     Decided --> [*]
@@ -221,10 +236,10 @@ Every finding carries its own lifecycle, shown in the thread panel:
   addressed.
 - **Advisor re-checked and closed it** — the reviewer is shown its own open
   findings each round and may name keys on a `resolved:` line that it verified
-  are fixed. Silence never closes anything, it cannot close a key it did not
-  raise on this thread, and it cannot raise and close the same defect in one
-  result. Closure is provisional: a later round of the same key reopens the
-  chain, because a finding that comes back is a regression.
+  are fixed. Silence never closes anything, and it cannot close a key it did
+  not raise on this thread. A finding that comes back after closure is a new
+  occurrence with its own chain, so the agent is not told it ignored advice it
+  acted on.
 - **Decided by the user** — **Not an issue** or **Won't fix**, with an
   optional note, stored on the chain root. A user cannot self-certify a fix:
   **Fixed** is established only when a later Advisor round re-checks and
@@ -332,8 +347,9 @@ still be assessed by that provider.
 
 ## Development
 
-Requires Node 22.19 or later in the Node 22 series. The build uses the locked
-BB 0.47.1 builder and SDK 0.6.79, independently of the desktop BB version.
+Requires Node 22.19 or later (Node 22, 24 or 26). The build uses the locked
+BB 0.49.1-nightly.43076974886.1 builder and SDK 0.6.140, independently of the
+desktop BB version.
 
 ```sh
 npm ci
