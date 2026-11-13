@@ -441,7 +441,7 @@ function count(value: number | null): string {
 }
 
 export function formatLedgerEntry(entry: LedgerEntry): string {
-  const at = new Date(entry.startedAt).toISOString().replace("T", " ").slice(0, 19);
+  const at = `${new Date(entry.startedAt).toISOString().replace("T", " ").slice(0, 19)} UTC`;
   if (entry.outcome === "skipped") {
     return `${at} seq ${entry.sourceSeq} skipped (${entry.reason})`;
   }
