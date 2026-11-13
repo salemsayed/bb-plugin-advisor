@@ -4,7 +4,7 @@ Advisor gives a coding thread a second model that checks its work before the fin
 
 ## Findings that stay with the thread
 
-Open the Advisor panel to see findings, evidence, and review history. Findings remain tracked across turns; a later review can re-check a correction and close the original finding. Use **Review now** for an on-demand check or **Fix in new turn** to ask the primary agent to address a finding.
+Open the Advisor panel to see findings, evidence, and review history. Findings remain tracked across turns; a later review can re-check a correction and close the original finding. Findings you mark **Not an issue** or **Won't fix** stay settled: the reviewer is shown your decision and does not raise the same interpretation again in new words, and it treats Advisor advice quoted in a message or linked from another thread as context, not as your request. Use **Review now** for an on-demand check or **Fix in new turn** to ask the primary agent to address a finding.
 
 ## Choose where reviews run
 

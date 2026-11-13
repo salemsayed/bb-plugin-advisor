@@ -140,7 +140,7 @@ export function formatReview(finding: AdvisorFinding): string {
   }
   const details = finding.details.length > 0 ? `\n\n${finding.details}` : "";
   const repeat = finding.toldBefore
-    ? "\n\n(This repeats advice already given earlier in this thread, so it is still unresolved. Fix it or explain why it does not apply.)"
+    ? "\n\n(Advisor gave this advice earlier in this thread and, after weighing any explanation since, still considers it open. Fix it, or explain why it does not apply.)"
     : "";
   return `Advisor ${finding.severity}: ${finding.summary}${details}${repeat}`;
 }

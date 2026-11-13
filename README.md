@@ -265,6 +265,23 @@ call, oldest first:
 - User messages and the final answer are always kept. If the rest does not fit
   the transcript budget, the oldest entries are replaced by a marked gap and the
   reviewer can read the thread or workspace for them.
+- Every entry says who it came from. User messages are `USER`, and a message
+  another thread sent (a parent's brief, a child's report) is marked with that
+  thread. A message or output that quotes Advisor findings, or that carries or
+  links another thread's content, gets a `[source note: …]` line. The prompt
+  tells the reviewer that only the requests in user messages define the work:
+  an Advisor recommendation quoted anywhere is never a user requirement, and a
+  linked thread's tasks become this thread's only when a user message here
+  explicitly asks for them to be done here.
+
+Each review also lists the user's decisions on this thread's earlier findings
+(**Not an issue**, **Won't fix**, a banner dismissal, or a legacy **Fixed**),
+newest first, with the severity, the finding's summary and the user's note. The
+reviewer must not raise a rejected interpretation again under any key or
+wording, while a different defect nearby, or harm the decision did not cover,
+is still reported under a new key. Before repeating an open finding, the
+reviewer has to weigh any explanation the agent or user gave that it does not
+apply, and close it on the `resolved:` line when the explanation holds.
 
 ## The life of a finding
 
@@ -311,8 +328,9 @@ Every finding carries its own lifecycle, shown in the thread panel:
   **Fixed** is established only when a later Advisor round re-checks and
   closes the finding. (Existing legacy `fixed` decisions remain readable.) A
   user decision is authoritative — later matching rounds stay in history but
-  never reopen it. Reopening clears the decision and any advisor closure
-  together.
+  never reopen it, and every later review shows the decision to the reviewer,
+  so it holds when a round rewords the finding under a new key. Reopening
+  clears the decision and any advisor closure together.
 
 Findings resolved before decisions were recorded keep rendering as a plain
 dismissal rather than being backfilled with a guess.
