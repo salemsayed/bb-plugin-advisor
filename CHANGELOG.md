@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.11
 
 - Skip routine completed turns. A turn with no tool calls or edits and a short answer (1,500 characters or less) is no longer reviewed on its own; the next review includes everything it skipped, so nothing goes unreviewed. A new **Completed-turn schedule** setting picks **Substantive turns** (the default), **Every completed turn** (the 0.1.10 behaviour), or every 2nd, 3rd or 5th substantive turn. A turn deferred while child threads run, or whose review was unavailable, makes the next turn due even when that turn is routine. The `advisor_review` tool and **Review now** are unchanged.
 - Send the reviewer only what is new. A reused reviewer gets the primary timeline after the sequence it last reviewed, with the same rules and result format, instead of another copy of the recent chat. A new reviewer, a reviewer whose context was compacted or cleared, and the first review after upgrading get the full bounded timeline. Both are rendered as readable entries instead of raw JSONL: tool output is cut to 80 lines or 8,000 characters and edit diffs to 300 lines or 8,000 characters, keeping the start and the end with a marked elision; secrets are redacted before anything is cut; user messages and the final answer are always kept, and older entries that do not fit the transcript budget are replaced by a marked gap.
 - Record a usage ledger. Every review run, including unavailable and skipped ones, is stored in the `advisor_review_runs` table with its trigger, outcome, evidence mode and size, the skipped turns it carried, the reviewer's provider, model and reasoning level, elapsed time, and the reviewer's input, cached, output and reasoning tokens and cost as the provider reported them. Usage that could not be read stays empty rather than zero. `bb advisor reviews` shows it (`--json` for scripts) and the `reviewLedger` RPC returns it.
 - Review threads other plugins start, such as bot coordinators, Auto Effort workers and automation workers, the same way as your own threads. A new **Review plugin-created threads** setting (on by default) turns this off, and a thread's own Advisor switch still wins. Advisor's own reviewer threads, composer predictions and workflow subagents are never reviewed, and your own hidden threads stay excluded as before.
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later.
 
 ## 0.1.10
 
