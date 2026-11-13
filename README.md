@@ -66,7 +66,9 @@ Advisor reviews a thread through three complementary paths:
    A turn that ends while child threads it started are still running is not
    reviewed on its own: waiting for them is the correct next step, and bb
    wakes the agent when they report. Advisor reviews the turn that ends once
-   they have finished.
+   they have finished. Routine turns, with no tool calls or edits and a
+   short answer, are skipped by default; the next review covers everything
+   they contained. See [Completed-turn schedule](#completed-turn-schedule).
 3. **Review now** — the thread panel can start the same review on demand. If
    the agent is still working, Advisor waits for the completed public answer
    instead of treating the missing answer as a finding.
@@ -116,6 +118,8 @@ All settings live in **Settings → Extensions → Advisor**.
 | --- | --- | --- |
 | Enable advisor | on | Requires an independent review before an agent completes substantial work. |
 | Review completed turns | on | Post-turn review; late findings carry into the next turn. |
+| Completed-turn schedule | Substantive turns | Which completed turns get a review. See [Completed-turn schedule](#completed-turn-schedule). |
+| Review plugin-created threads | on | Review threads other plugins start, such as bot coordinators, Auto Effort workers and automation workers. See [Which threads are reviewed](#which-threads-are-reviewed). |
 | Auto-continue on late findings | **off** | See below. |
 | Fallback advisor reasoning | inherit | Used only when a machine follows the primary model. |
 | Minimum severity | nit | Findings below the threshold are not delivered to the agent. |
@@ -188,6 +192,44 @@ machine has no advisor model configured, the review reports as unavailable
 instead of failing at spawn. A catalog that cannot be read is treated as
 inconclusive, so a transient outage does not disable reviews.
 
+### Completed-turn schedule
+
+A completed turn is **routine** when it made no tool calls or edits and its
+answer is 1,500 characters or less: a greeting, a clarifying question, a short
+factual reply. Everything else is **substantive**.
+
+| Option | Reviews |
+| --- | --- |
+| Substantive turns (default) | every substantive turn; routine turns are skipped |
+| Every completed turn | every turn, as in 0.1.10 |
+| Every 2nd, 3rd or 5th substantive turn | the Nth substantive turn; routine turns are skipped |
+
+A skipped turn is never dropped: the next review starts where the reviewer
+last stopped, so its user message, answer and any work are part of that
+review. A turn that waited for running child threads, or whose review was
+unavailable, makes the next turn due even when that turn is routine. With an
+every-Nth option the last substantive turns of a conversation wait for the
+next due review; use **Review now** to review them at once. The mandatory
+`advisor_review` tool and **Review now** are not affected by the schedule.
+
+### Which threads are reviewed
+
+Your own visible threads are reviewed while Advisor is on for them. With
+**Review plugin-created threads** on, threads other plugins start are
+reviewed the same way, visible or hidden: they get the `advisor_review` tool
+and its instructions, completed-turn reviews, and late findings in their next
+turn. Some plugin threads are never reviewed, whatever the settings:
+
+- Advisor's own reviewer threads, so a reviewer never reviews itself or
+  starts a reviewer of its own;
+- `composer-predictions` threads, which only write composer suggestions;
+- `workflows` subagent threads, whose results are reviewed in the thread that
+  started the workflow.
+
+Your own hidden threads stay excluded as before. A thread's own Advisor
+switch still wins: `bb advisor enable <thread>` turns a plugin thread on even
+while the setting is off, and `bb advisor disable <thread>` turns one off.
+
 ### Auto-continue on late findings (off by default)
 
 When enabled, Advisor starts the **Fix in new turn** follow-up without a
@@ -199,6 +241,30 @@ finding cannot create an unattended review loop.
 
 Place project-specific reviewer policy in `WATCHDOG.md` at the workspace root.
 The reviewer reads it before each review; the filename is configurable.
+
+## What the reviewer sees
+
+Each review is one message to the reviewer thread. The first review of a
+thread, and any review after the reviewer was respawned or its context was
+compacted or cleared, carries the full instructions and the primary timeline
+of the last 12 conversation segments. Every later review is shorter: it
+repeats the review budget and the result format and sends only the timeline
+entries after the sequence the reviewer last reviewed, so a long chat does
+not resend the same history every turn and the reviewer's earlier messages
+stay a stable, cacheable prefix.
+
+The timeline is rendered as one entry per message, command, edit or tool
+call, oldest first:
+
+- Command and tool output keeps its first and last lines, at most 80 lines or
+  8,000 characters; edit diffs keep at most 300 lines or 8,000 characters.
+  Every cut is marked with the number of lines and characters left out.
+- Common secret shapes (API keys, tokens, private keys, passwords in URLs and
+  assignments) are redacted before anything is cut, so a cut cannot expose half
+  a secret.
+- User messages and the final answer are always kept. If the rest does not fit
+  the transcript budget, the oldest entries are replaced by a marked gap and the
+  reviewer can read the thread or workspace for them.
 
 ## The life of a finding
 
@@ -284,7 +350,8 @@ When the advisor cannot run — the provider does not support the reviewer's
 permission mode and no advisor model is configured, the reviewer thread fails
 to start, the review exceeds the timeout, or the primary turn fails or ends
 without a completed public answer — the tool reports `Advisor unavailable`
-with the reason. No review row is recorded, and pending advice from an earlier
+with the reason. No review row is recorded (the run still appears in the
+[usage ledger](#usage-ledger)), and pending advice from an earlier
 turn stays pending. A waiting **Review now** request is settled as unavailable
 and can be retried instead of remaining stuck. Cancelling the primary turn
 stops the reviewer thread.
@@ -324,9 +391,38 @@ transient outage therefore neither disables reviews nor silently widens them.
 
 ```sh
 bb advisor status [thread-id]
-bb advisor reviews [thread-id]
+bb advisor reviews [thread-id] [--json]
 bb plugin logs advisor -f
 ```
+
+### Usage ledger
+
+Every review run is recorded in the `advisor_review_runs` table of the
+plugin database, one row per run: reviewed, unavailable, and skipped by the
+completed-turn schedule. `bb advisor reviews` lists a thread's recent runs
+after its findings, `--json` prints both, and the `reviewLedger` RPC returns
+runs for one thread or all of them (`{ "threadId"?, "since"?, "limit"? }`,
+newest first).
+
+| Column | Meaning |
+| --- | --- |
+| `trigger` | `tool`, `post-turn` or `manual` |
+| `outcome`, `reason` | `reviewed`, `unavailable` with its reason, or `skipped` with `routine`, `cadence` or `waiting-for-children` |
+| `review_id`, `severity` | the stored review and its verdict |
+| `source_seq` | primary timeline sequence reviewed |
+| `evidence_mode`, `evidence_from_seq`, `evidence_to_seq`, `prompt_chars` | `full` or `incremental`, the entries sent and the size of the message |
+| `carried_turns` | turns since the last completed review that this run covered |
+| `advisor_thread_id`, `provider_id`, `model`, `reasoning_level` | the reviewer that ran |
+| `started_at`, `finished_at`, `elapsed_ms` | wall time of the run |
+| `usage_status` | `recorded`, `unknown` (the provider reported nothing new), `pending` (still being read) or `none` (no model was asked) |
+| `input_tokens`, `cached_input_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `reasoning_tokens`, `total_tokens` | reviewer usage for this run as the provider reports it; empty when unknown, never a guessed zero |
+| `cost_amount`, `cost_currency` | only when the provider reports a cost |
+
+Usage is the change in the reviewer thread's own token counters across the
+run, read a moment after it ends. Providers count differently: Codex includes
+cached tokens in `input_tokens`, Claude Code reports them only in
+`cached_input_tokens`. Runs on the same reviewer that overlap, such as a tool
+review interrupting a post-turn review, can share usage between them.
 
 ## Security and trust
 
@@ -374,6 +470,12 @@ agent's work, holds findings across turns, and injects advice back into the
 conversation — originates in [oh-my-pi](https://github.com/can1357/oh-my-pi)
 by can1357. This plugin is a re-implementation of that design on bb's plugin
 surface; the ideas are omp's, the bb-specific code is new.
+
+The completed-turn schedule, incremental review evidence and usage ledger
+adapt later oh-my-pi advisor work: reviewing every Nth update while keeping
+skipped context, sending only new transcript with bounded tool output and edit
+diffs, redacting before truncating, and accounting for reviewer usage. Skipping
+routine turns is Advisor's own addition.
 
 [pi-omplike-advisor](https://github.com/pasky/pi-omplike-advisor) by pasky
 ports the same design to upstream pi and is worth reading for its own take on

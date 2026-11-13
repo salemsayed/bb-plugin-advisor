@@ -12,6 +12,8 @@ Use the switch in an existing thread's composer to override the global default. 
 
 Set **Findings language** in Settings → Extensions → Advisor to choose the language of finding titles, explanations and suggestions. Leave it empty to keep the current behavior. Plugin UI stays unchanged. Set **Additional instructions** there to append your own review guidance after the result format; it is fenced, limited to 4000 characters, and cannot change the result block. Empty adds nothing.
 
+By default only substantive completed turns are reviewed: a turn with no tool calls or edits and a short answer is skipped, and the next review covers it. Each later review sends only what is new since the reviewer last looked. Threads other plugins start, such as bot coordinators and workers, are reviewed too unless you turn **Review plugin-created threads** off. Every review run, with its tokens and time, is recorded and shown by `bb advisor reviews`.
+
 Choose a reviewer model and reasoning level for each connected machine, or follow the primary thread's model. The reviewer can use the same provider or another configured provider that supports its required permission mode.
 
 ## Requirements and usage

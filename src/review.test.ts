@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  formatTimelineRows,
   meetsThreshold,
   normalizeAdvice,
   parseAdvisorOutput,
@@ -138,17 +137,5 @@ END_ADVISOR_RESULT`);
     expect(first).toBe(second);
     expect(meetsThreshold("blocker", "concern")).toBe(true);
     expect(meetsThreshold("nit", "concern")).toBe(false);
-  });
-});
-
-describe("timeline formatting", () => {
-  it("keeps the newest complete rows within the character budget", () => {
-    const output = formatTimelineRows(
-      [{ text: "old" }, { text: "middle" }, { text: "new" }],
-      35,
-    );
-    expect(output).not.toContain("old");
-    expect(output).toContain("middle");
-    expect(output).toContain("new");
   });
 });

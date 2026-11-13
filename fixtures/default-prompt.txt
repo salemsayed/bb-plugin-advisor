@@ -29,7 +29,7 @@ Each open finding is one occurrence of a problem, not a kind of problem. Reuse i
 Focus supplied by the primary agent:
 No additional focus was supplied.
 
-Primary timeline through sequence 42 (JSONL, oldest selected row first):
+Primary timeline through sequence 42 (oldest entry first; long tool output and edit diffs are excerpted, secrets are redacted, and every elision is marked):
 {"role":"assistant","text":"Implemented it."}
 
 Return exactly one result in this format. Use pass and silence-equivalent details when there is no actionable issue. Do not repeat old advice merely to have something to say.
