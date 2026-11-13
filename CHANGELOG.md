@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.12
 
 - Show the reviewer the user's decisions. Every review now lists the findings the user settled on this thread (**Not an issue**, **Won't fix**, a banner dismissal, or a legacy **Fixed**), with the severity, the finding's summary and the user's note, and tells the reviewer not to raise a rejected interpretation again under any key or wording. A different defect nearby, or harm the decision did not cover, is still reported under a new key. Before, settled findings were left out of the prompt, so a reworded round under a new key started a fresh chain and reached the agent again (#29, reported by @k0d3r1s).
 - Mark who said what in the evidence. Messages another thread sent are marked with that thread, and any message, answer or output that quotes Advisor findings, or carries or links another thread's content, gets a `[source note: …]` line. The prompt says that only the requests in user messages define the thread's work: a quoted Advisor recommendation is never a user requirement, and a linked thread's tasks become this thread's only when the user explicitly asks for them here. A thread diagnosing another thread's finding is reviewed on the diagnosis, not on the other thread's task (#29).
 - Weigh an explanation before repeating a finding. The reviewer must assess an explanation that an open finding does not apply before raising it again, and may close the finding when it holds. The note on a repeated finding no longer says it is "still unresolved" because it was sent before; it says Advisor still considers it open after weighing any explanation (#29).
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later.
 
 ## 0.1.11
 
