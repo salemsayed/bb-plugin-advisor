@@ -1301,6 +1301,39 @@ END_ADVISOR_RESULT`;
     expect(await startTurn(harness)).toContain("The claimed test did not run");
   });
 
+  it("keeps a briefing out of a compaction turn and sends it in the next real turn", async () => {
+    const { harness } = await postTurnFinding();
+    const compaction = {
+      seq: 51,
+      type: "client/turn/requested",
+      data: {
+        input: [
+          {
+            type: "text",
+            text: "/compact",
+            mentions: [
+              { resource: { kind: "command", origin: "builtin", name: "compact" } },
+            ],
+          },
+        ],
+      },
+    };
+    harness.sdk.stub("threads.events.list", async () => [compaction]);
+
+    expect(await startTurn(harness)).toBeNull();
+    const pending = (await harness.callRpc("pendingAdvice", {
+      threadId: "thread-primary",
+    })) as { advice: unknown };
+    expect(pending.advice).not.toBeNull();
+
+    harness.sdk.stub("threads.events.list", async () => [
+      { seq: 60, type: "client/turn/requested", data: { input: [{ type: "text", text: "Go on" }] } },
+      { seq: 55, type: "turn/completed", data: { status: "completed" } },
+      compaction,
+    ]);
+    expect(await startTurn(harness)).toContain("The claimed test did not run");
+  });
+
   it("keeps findings unsent when the briefing fails to reach the agent", async () => {
     const { harness } = await postTurnFinding();
     harness.sdk.stub("threads.send", async () => {

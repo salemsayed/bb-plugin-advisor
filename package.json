@@ -26,6 +26,7 @@
     "src/evidence.ts",
     "src/ledger.ts",
     "src/schedule.ts",
+    "src/turn-start.ts",
     "scripts/build.mjs",
     "dist/app.css",
     "dist/app.js",
