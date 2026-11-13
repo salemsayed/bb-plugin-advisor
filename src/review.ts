@@ -144,27 +144,3 @@ export function formatReview(finding: AdvisorFinding): string {
     : "";
   return `Advisor ${finding.severity}: ${finding.summary}${details}${repeat}`;
 }
-
-export function formatTimelineRows(
-  rows: readonly object[],
-  maxCharacters: number,
-): string {
-  const selected: string[] = [];
-  let used = 0;
-  for (let index = rows.length - 1; index >= 0; index -= 1) {
-    const line = JSON.stringify(rows[index]);
-    if (selected.length === 0) {
-      // The newest row is always included, but it is not exempt from the
-      // budget: one large tool result would otherwise blow past it entirely.
-      selected.push(
-        line.length > maxCharacters ? line.slice(0, maxCharacters) : line,
-      );
-      used = Math.min(line.length, maxCharacters) + 1;
-      continue;
-    }
-    if (used + line.length + 1 > maxCharacters) break;
-    selected.push(line);
-    used += line.length + 1;
-  }
-  return selected.reverse().join("\n");
-}

@@ -1837,7 +1837,7 @@ describe("post-turn review scope", () => {
       lastAssistantText: "Turn one done.",
     });
     await vi.waitFor(() =>
-      expect(harness.sdk.callsTo("threads.timeline")).toHaveLength(1),
+      expect(harness.sdk.callsTo("threads.timeline")).toHaveLength(2),
     );
 
     // The next turn starts while the post-turn review of turn one is still running.
