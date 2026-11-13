@@ -1353,7 +1353,7 @@ describe("repeated advice", () => {
     expect(first).toContain("Advisor blocker: The claimed test did not run");
     expect(second).toContain("Advisor blocker: The claimed test did not run");
     expect(second).not.toContain("Advisor pass");
-    expect(second).toContain("still unresolved");
+    expect(second).toContain("still considers it open");
   });
 });
 
@@ -1856,7 +1856,7 @@ describe("post-turn review scope", () => {
     expect(harness.sdk.callsTo("threads.output")).toHaveLength(2);
     expect(result).toContain("Advisor blocker:");
     // Turn one's review was still queued, so the agent was never told it.
-    expect(result).not.toContain("still unresolved");
+    expect(result).not.toContain("still considers it open");
     const panel = (await harness.callRpc("threadReviews", {
       threadId: "thread-primary",
     })) as { reviews: { repeatCount: number }[] };
@@ -2237,7 +2237,7 @@ END_ADVISOR_RESULT`;
     expect(briefing).toContain("Escalated blocker round");
     expect(briefing).not.toContain("Quiet concern round");
     expect(briefing).not.toContain("First concern round");
-    expect(briefing).not.toContain("This repeats advice");
+    expect(briefing).not.toContain("Advisor gave this advice earlier");
   });
 
   it("tells the agent a finding repeats only after an earlier round reached it", async () => {
@@ -2257,7 +2257,7 @@ END_ADVISOR_RESULT`;
       threadId: "thread-primary",
     })) as { advice: { toldBefore: boolean } | null };
     expect(first.advice?.toldBefore).toBe(false);
-    expect(await startTurn(harness)).not.toContain("This repeats advice");
+    expect(await startTurn(harness)).not.toContain("Advisor gave this advice earlier");
 
     setTimelineSeq(43);
     await idle("Second turn.");
@@ -2265,7 +2265,7 @@ END_ADVISOR_RESULT`;
       threadId: "thread-primary",
     })) as { advice: { repeatCount: number; toldBefore: boolean } | null };
     expect(repeat.advice).toMatchObject({ repeatCount: 2, toldBefore: true });
-    expect(await startTurn(harness)).toContain("This repeats advice");
+    expect(await startTurn(harness)).toContain("Advisor gave this advice earlier");
   });
 
   it("shows a dismissed chain in the panel as resolved with no decision", async () => {
@@ -2533,7 +2533,7 @@ END_ADVISOR_RESULT`);
     })) as { open: { severity: string; chainId: number; repeatCount: number } | null };
     expect(regressed.open).toMatchObject({ severity: "blocker", repeatCount: 1 });
     expect(regressed.open?.chainId).not.toBe(raised.open?.chainId);
-    expect(recurrence).not.toContain("This repeats advice");
+    expect(recurrence).not.toContain("Advisor gave this advice earlier");
   });
 
   it("ignores a close for a key that is not open on the thread", async () => {
@@ -2719,7 +2719,7 @@ END_ADVISOR_RESULT`;
     );
 
     expect(second).toContain("Advisor blocker:");
-    expect(second).toContain("still unresolved");
+    expect(second).toContain("still considers it open");
 
     const panel = (await harness.callRpc("threadReviews", {
       threadId: "thread-primary",
@@ -3902,7 +3902,7 @@ END_ADVISOR_RESULT`;
     await round(host, 42, verdict("concern", "The closure review is still running", "none"));
     const second = await round(host, 43, verdict("concern", "The closure review is still running, still", "none"));
 
-    expect(second).toContain("This repeats advice already given earlier");
+    expect(second).toContain("Advisor gave this advice earlier in this thread");
     expect((await chains(host.harness))[0]).toMatchObject({ repeatCount: 2 });
   });
 
@@ -3915,7 +3915,7 @@ END_ADVISOR_RESULT`;
       verdict("concern", "The revised plan's review is still in progress", "plan-review-incomplete"),
     );
 
-    expect(second).not.toContain("This repeats advice");
+    expect(second).not.toContain("Advisor gave this advice earlier");
     const rows = await chains(host.harness);
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({
@@ -3943,7 +3943,7 @@ END_ADVISOR_RESULT`;
       verdict("concern", "The rollback section's review is still running", "none"),
     );
 
-    expect(recurrence).not.toContain("This repeats advice");
+    expect(recurrence).not.toContain("Advisor gave this advice earlier");
     const rows = (await chains(host.harness)).filter((row) => row.summary !== "All reviewers reported");
     expect(rows.map((row) => [row.summary, row.repeatCount, row.closedSeq])).toEqual([
       ["The rollback section's review is still running", 1, null],
