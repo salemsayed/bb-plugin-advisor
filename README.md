@@ -20,15 +20,9 @@ Advisor is a bb port of the advisor from
 [oh-my-pi](https://github.com/can1357/oh-my-pi) — the design is theirs. See
 [Credits](#credits).
 
-<p align="center">
-  <a href="https://cdn.jsdelivr.net/gh/salemsayed/bb-plugin-advisor@main/docs/media/advisor-promo.mp4"><strong>Play the 22-second demo →</strong></a>
-  <br />
-  <sub>Opens in your browser's video player with sound.</sub>
-</p>
-
-| Finding, evidence, and decisions | Re-checked and closed |
+| Finding, evidence, and decisions | Closed and decided |
 | --- | --- |
-| ![Advisor panel showing an open finding with evidence and decision controls](./docs/media/panel.png) | ![Advisor history showing independently re-checked findings](./docs/media/history.png) |
+| ![Advisor panel showing an open finding with evidence and decision controls](./docs/media/panel.png) | ![Advisor history with a finding the reviewer re-checked and closed, and one the user decided not to fix](./docs/media/history.png) |
 
 ## Why
 
