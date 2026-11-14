@@ -25,6 +25,7 @@
     "src/async.ts",
     "src/evidence.ts",
     "src/ledger.ts",
+    "src/reviewer-request.ts",
     "src/schedule.ts",
     "src/turn-start.ts",
     "scripts/build.mjs",

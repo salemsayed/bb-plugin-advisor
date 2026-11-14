@@ -369,12 +369,16 @@ and can be retried instead of remaining stuck. Cancelling the primary turn
 stops the reviewer thread.
 
 Claude Code in Accept Edits mode can still ask for approval before running a
-shell command. Because the reviewer thread is hidden, that request can leave a
-review waiting until it times out. Use **Show reviewer** to inspect the pending
-request and approve only commands you intend to allow, then retry the review.
-Increasing the timeout alone does not resolve an unanswered approval. A reviewer
-may instead assess the supplied transcript; its result should say when it did
-not independently run commands.
+shell command, and nobody can answer a request in the hidden reviewer thread.
+Advisor watches the reviewer while it waits: when the reviewer asks for a
+command approval, a file change, a permission or an answer, Advisor stops it
+at once and reports `Advisor unavailable: the reviewer asked for …` with the
+command, instead of waiting for the timeout. Advisor never approves or
+answers the request, and the run is not counted as a pass. The incident, and
+the run in the [usage ledger](#usage-ledger), keep that reason and the reviewer
+thread; **Show the reviewer's work** on the incident shows the request. Raising
+the timeout does not help. A retry can still pass when the reviewer works from
+the supplied transcript instead of running commands.
 
 ## The reviewer thread
 

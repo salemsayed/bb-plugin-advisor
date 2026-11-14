@@ -129,6 +129,43 @@ async function loadAdvisor(
   };
 }
 
+function untilAborted({ signal }: { signal?: AbortSignal }): Promise<never> {
+  return new Promise((_, reject) => {
+    signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+      once: true,
+    });
+  });
+}
+
+function reviewerApproval(status: "pending" | "resolved") {
+  return {
+    id: "interaction-1",
+    threadId: "thread-advisor",
+    turnId: "turn-1",
+    providerId: "claude-code",
+    providerRequestId: "request-1",
+    providerThreadId: "provider-thread-1",
+    createdAt: 1,
+    resolvedAt: status === "resolved" ? 2 : null,
+    status,
+    statusReason: null,
+    resolution: null,
+    payload: {
+      kind: "approval" as const,
+      availableDecisions: ["allow_once" as const, "deny" as const],
+      reason: null,
+      subject: {
+        kind: "command" as const,
+        itemId: "item-1",
+        command: "node -e 'console.log(1)'",
+        cwd: "/workspace",
+        actions: [],
+        sessionGrant: null,
+      },
+    },
+  };
+}
+
 interface RunningThread {
   id: string;
   title: string;
@@ -1612,6 +1649,112 @@ describe("advisor unavailability", () => {
     expect(result).toContain("did not finish within");
     expect(result).not.toContain("Advisor pass");
     expect(stop).toHaveBeenCalledWith({ threadId: "thread-advisor" });
+  });
+
+  it("settles a review at once when the reviewer waits for a command approval", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    const stop = vi.fn(async () => ({ ok: true }));
+    harness.sdk.stub("threads.stop", stop);
+    harness.sdk.stub("threads.wait", untilAborted);
+    harness.sdk.stub("threads.interactions.list", async () => [
+      reviewerApproval("pending"),
+    ]);
+
+    const startedAt = Date.now();
+    const result = await harness.callAgentTool(
+      "advisor_review",
+      { focus: "Review that needs a shell command." },
+      { threadId: "thread-primary" },
+    );
+
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(result).toContain(
+      "Advisor unavailable: the reviewer asked for a command approval (`node -e 'console.log(1)'`), which Advisor never gives, so the review was stopped.",
+    );
+    expect(result).toContain("Show the reviewer's work");
+    expect(result).toContain("NOT an approval");
+    expect(result).not.toContain("did not finish within");
+    expect(stop).toHaveBeenCalledWith({ threadId: "thread-advisor" });
+    expect(harness.sdk.callsTo("threads.interactions.resolve")).toHaveLength(0);
+
+    const panel = (await harness.callRpc("threadReviews", {
+      threadId: "thread-primary",
+    })) as {
+      reviews: unknown[];
+      incidents: { reason: string; advisorThreadId: string | null }[];
+    };
+    expect(panel.reviews).toHaveLength(0);
+    expect(panel.incidents).toEqual([
+      expect.objectContaining({
+        reason: expect.stringContaining("asked for a command approval"),
+        advisorThreadId: "thread-advisor",
+      }),
+    ]);
+    const ledger = (await harness.callRpc("reviewLedger", {
+      threadId: "thread-primary",
+    })) as { runs: { outcome: string; reason: string; advisorThreadId: string }[] };
+    expect(ledger.runs[0]).toMatchObject({
+      outcome: "unavailable",
+      reason: expect.stringContaining("the reviewer asked for a command approval"),
+      advisorThreadId: "thread-advisor",
+    });
+    await expect(
+      harness.callRpc("reviewerThreadAvailable", {
+        threadId: "thread-primary",
+        advisorThreadId: "thread-advisor",
+      }),
+    ).resolves.toEqual({ available: true });
+  });
+
+  it("settles a review when a reviewer request arrives as an event", async () => {
+    const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
+    let waiting!: () => void;
+    const waitStarted = new Promise<void>((resolve) => {
+      waiting = resolve;
+    });
+    harness.sdk.stub("threads.wait", (args: { signal?: AbortSignal }) => {
+      waiting();
+      return untilAborted(args);
+    });
+    harness.sdk.stub("threads.interactions.list", async () => [
+      reviewerApproval("resolved"),
+    ]);
+
+    const review = harness.callAgentTool(
+      "advisor_review",
+      { focus: "Review that asks a question." },
+      { threadId: "thread-primary" },
+    );
+    await waitStarted;
+    await harness.emitThreadEvent("interaction.pending", {
+      thread: await idleThread({ threadId: "thread-other" }),
+      interaction: reviewerApproval("pending"),
+    });
+    await harness.emitThreadEvent("interaction.pending", {
+      thread: await idleThread({ threadId: "thread-advisor" }),
+      interaction: {
+        ...reviewerApproval("pending"),
+        payload: {
+          kind: "user_question",
+          questions: [
+            {
+              id: "q1",
+              prompt: "Which file?",
+              allowFreeText: true,
+              multiSelect: false,
+              required: true,
+            },
+          ],
+        },
+        resolution: null,
+      },
+    });
+
+    const result = await review;
+    expect(result).toContain(
+      "Advisor unavailable: the reviewer asked for an answer to its question",
+    );
+    expect(result).not.toContain("did not finish within");
   });
 
   it("stops the reviewer when the primary turn is cancelled", async () => {

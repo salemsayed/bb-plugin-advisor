@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Stop waiting for a reviewer that asked for something nobody can answer. A hidden Claude Code reviewer in Accept Edits mode could ask to approve a shell command, wait unseen until the review timeout, and come back as "did not finish within 120s" with advice to raise the timeout (#9). Advisor now watches the reviewer thread while it waits; when the reviewer asks for a command approval, a file change, a permission or an answer, Advisor stops it at once and reports `Advisor unavailable: the reviewer asked for …`, naming the command. It never approves or answers the request, and the run is not a pass. The usage ledger records the run with that reason, and an unavailable entry in the panel now has **Show the reviewer's work** when a reviewer ran, so the request can be read.
+
 ## 0.1.13
 
 - Keep the turn briefing out of compaction turns. A `/compact` turn has no agent to read a steered message, so bb held Advisor's briefing and started a new turn with it the moment compaction finished, and the agent answered a queued finding, or the Advisor policy note, in a turn nobody asked for. This happened for `/compact` typed by the user, for `bb thread compact`, and for compaction requested by another plugin. Advisor now recognises a turn started by the built-in compact command and leaves it alone: findings stay queued and the policy stays untold until the next real turn, which is briefed as before.
