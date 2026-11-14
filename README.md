@@ -30,10 +30,6 @@ Advisor is a bb port of the advisor from
 | --- | --- |
 | ![Advisor panel showing an open finding with evidence and decision controls](./docs/media/panel.png) | ![Advisor history showing independently re-checked findings](./docs/media/history.png) |
 
-<sub>The finding on the left is real: while this release was being prepared,
-Advisor reviewed the repository and flagged a stale screenshot in this very
-README. It was recaptured — the screenshot above is the replacement.</sub>
-
 ## Why
 
 An agent grading its own work has every incentive to pass it. Advisor adds an
@@ -112,8 +108,6 @@ bb plugin install . --yes
 
 All settings live in **Settings → Extensions → Advisor**.
 
-![Advisor settings, including optional auto-continue and per-machine reviewer selection](./docs/media/settings.png)
-
 | Setting | Default | Notes |
 | --- | --- | --- |
 | Enable advisor | on | Requires an independent review before an agent completes substantial work. |
@@ -156,8 +150,7 @@ so switching Advisor on in an existing thread takes effect in stages:
 
 **Review now** works immediately in the Advisor panel. Clearing model context
 starts a fresh session with the tool and instructions in place, but also resets
-the agent's working context. (Verified with Claude Code on BB 0.43.2 and Codex
-on BB 0.43.1.)
+the agent's working context.
 
 The same controls are available from the CLI. Omit the thread id when running
 inside that thread. Use `follow` to clear its override and track the global
@@ -201,7 +194,7 @@ factual reply. Everything else is **substantive**.
 | Option | Reviews |
 | --- | --- |
 | Substantive turns (default) | every substantive turn; routine turns are skipped |
-| Every completed turn | every turn, as in 0.1.10 |
+| Every completed turn | every turn |
 | Every 2nd, 3rd or 5th substantive turn | the Nth substantive turn; routine turns are skipped |
 
 A skipped turn is never dropped: the next review starts where the reviewer
@@ -226,7 +219,7 @@ turn. Some plugin threads are never reviewed, whatever the settings:
 - `workflows` subagent threads, whose results are reviewed in the thread that
   started the workflow.
 
-Your own hidden threads stay excluded as before. A thread's own Advisor
+Your own hidden threads are not reviewed. A thread's own Advisor
 switch still wins: `bb advisor enable <thread>` turns a plugin thread on even
 while the setting is off, and `bb advisor disable <thread>` turns one off.
 
