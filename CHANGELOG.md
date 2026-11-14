@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.13
+
+- Keep the turn briefing out of compaction turns. A `/compact` turn has no agent to read a steered message, so bb held Advisor's briefing and started a new turn with it the moment compaction finished, and the agent answered a queued finding, or the Advisor policy note, in a turn nobody asked for. This happened for `/compact` typed by the user, for `bb thread compact`, and for compaction requested by another plugin. Advisor now recognises a turn started by the built-in compact command and leaves it alone: findings stay queued and the policy stays untold until the next real turn, which is briefed as before.
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later.
+
 ## 0.1.12
 
 - Show the reviewer the user's decisions. Every review now lists the findings the user settled on this thread (**Not an issue**, **Won't fix**, a banner dismissal, or a legacy **Fixed**), with the severity, the finding's summary and the user's note, and tells the reviewer not to raise a rejected interpretation again under any key or wording. A different defect nearby, or harm the decision did not cover, is still reported under a new key. Before, settled findings were left out of the prompt, so a reworded round under a new key started a fresh chain and reached the agent again (#29, reported by @k0d3r1s).

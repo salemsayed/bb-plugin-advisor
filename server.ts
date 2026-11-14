@@ -36,6 +36,7 @@ import {
   type AdvisorFinding,
   type AdvisorSeverity,
 } from "./src/review.js";
+import { TURN_START_EVENT_TYPES, compactionUnderWay } from "./src/turn-start.js";
 
 const PLUGIN_ID = "advisor";
 const ADVISOR_TOOL = "advisor_review";
@@ -3637,6 +3638,24 @@ export default async function plugin(bb: BbPluginApi) {
     return true;
   }
 
+  async function turnIsCompaction(threadId: string): Promise<boolean> {
+    try {
+      return compactionUnderWay(
+        await bb.sdk.threads.events.list({
+          threadId,
+          types: [...TURN_START_EVENT_TYPES],
+          order: "desc",
+          limit: "20",
+        }),
+      );
+    } catch (error) {
+      bb.log.warn(
+        `Advisor could not tell whether ${threadId} is compacting, so it briefs the turn: ${describeError(error)}`,
+      );
+      return false;
+    }
+  }
+
   /** Threads with a briefing on its way, so a repeated event cannot send two. */
   const briefingThreads = new Set<string>();
 
@@ -3665,6 +3684,7 @@ export default async function plugin(bb: BbPluginApi) {
       // rather than join this one.
       const current = await bb.sdk.threads.get({ threadId: thread.id });
       if (current.status !== "active") return;
+      if (await turnIsCompaction(thread.id)) return;
       await bb.sdk.threads.send({
         threadId: thread.id,
         mode: "steer",
