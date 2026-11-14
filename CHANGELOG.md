@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.14
 
 - Stop waiting for a reviewer that asked for something nobody can answer. A hidden Claude Code reviewer in Accept Edits mode could ask to approve a shell command, wait unseen until the review timeout, and come back as "did not finish within 120s" with advice to raise the timeout (#9). Advisor now watches the reviewer thread while it waits; when the reviewer asks for a command approval, a file change, a permission or an answer, Advisor stops it at once and reports `Advisor unavailable: the reviewer asked for …`, naming the command. It never approves or answers the request, and the run is not a pass. The usage ledger records the run with that reason, and an unavailable entry in the panel now has **Show the reviewer's work** when a reviewer ran, so the request can be read.
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later.
 
 ## 0.1.13
 
