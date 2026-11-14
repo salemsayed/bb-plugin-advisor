@@ -37,6 +37,10 @@ import {
   type AdvisorSeverity,
 } from "./src/review.js";
 import { TURN_START_EVENT_TYPES, compactionUnderWay } from "./src/turn-start.js";
+import {
+  reviewerRequestReason,
+  type ReviewerInteraction,
+} from "./src/reviewer-request.js";
 
 const PLUGIN_ID = "advisor";
 const ADVISOR_TOOL = "advisor_review";
@@ -106,6 +110,7 @@ const LATE_REPLY_GRACE_MS = 10_000;
  * refused; after it the older round is interrupted for the newer work.
  */
 const BUSY_REVIEWER_GRACE_MS = 20_000;
+const REVIEWER_REQUEST_POLL_MS = 3_000;
 const THREAD_LIST_PAGE = 200;
 const RUNNING_CHILD_STATUSES: ReadonlySet<string> = new Set(["starting", "active"]);
 const NEVER_REVIEWED_ORIGIN_PLUGINS: ReadonlySet<string> = new Set([
@@ -227,6 +232,7 @@ const incidentSchema = z.object({
   reason: z.string(),
   sourceSeq: z.number().int(),
   createdAt: z.number(),
+  advisorThreadId: z.string().nullable(),
 });
 
 const pendingAdviceSchema = z.object({
@@ -432,6 +438,7 @@ const incidentRowSchema = z.object({
   source_seq: z.number().int(),
   reason: z.string(),
   created_at: z.number(),
+  advisor_thread_id: z.string(),
 });
 
 type ReviewRow = z.infer<typeof reviewRowSchema>;
@@ -1203,6 +1210,8 @@ export default async function plugin(bb: BbPluginApi) {
       skipped_turns INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL
     )`,
+    `ALTER TABLE advisor_incidents
+      ADD COLUMN advisor_thread_id TEXT NOT NULL DEFAULT ''`,
   ]);
   const ledger = createReviewLedger(db);
 
@@ -1473,12 +1482,13 @@ export default async function plugin(bb: BbPluginApi) {
     primaryThreadId: string,
     sourceSeq: number,
     reason: string,
+    advisorThreadId = "",
   ): void {
     db.prepare(
       `INSERT INTO advisor_incidents (
-         primary_thread_id, source_seq, reason, created_at
-       ) VALUES (?, ?, ?, ?)`,
-    ).run(primaryThreadId, sourceSeq, reason, Date.now());
+         primary_thread_id, source_seq, reason, created_at, advisor_thread_id
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(primaryThreadId, sourceSeq, reason, Date.now(), advisorThreadId);
     // An advisor that fails every turn would otherwise grow this table without
     // bound; only the most recent failures are diagnostically useful.
     db.prepare(
@@ -1777,7 +1787,8 @@ export default async function plugin(bb: BbPluginApi) {
   function readThreadIncidents(primaryThreadId: string) {
     return db
       .prepare(
-        `SELECT id, source_seq, reason, created_at FROM advisor_incidents
+        `SELECT id, source_seq, reason, created_at, advisor_thread_id
+         FROM advisor_incidents
          WHERE primary_thread_id = ? ORDER BY source_seq DESC, id DESC
          LIMIT 50`,
       )
@@ -2070,6 +2081,7 @@ export default async function plugin(bb: BbPluginApi) {
           reason: incident.reason,
           sourceSeq: incident.source_seq,
           createdAt: incident.created_at,
+          advisorThreadId: incident.advisor_thread_id || null,
         })),
         advisorThreadId: readAdvisorThreadId(threadId),
         reviewing: isReviewing(threadId),
@@ -2152,9 +2164,13 @@ export default async function plugin(bb: BbPluginApi) {
       const owned = db
         .prepare(
           `SELECT 1 FROM advisor_reviews
-           WHERE primary_thread_id = ? AND advisor_thread_id = ? LIMIT 1`,
+           WHERE primary_thread_id = ? AND advisor_thread_id = ?
+           UNION ALL
+           SELECT 1 FROM advisor_incidents
+           WHERE primary_thread_id = ? AND advisor_thread_id = ?
+           LIMIT 1`,
         )
-        .get(threadId, advisorThreadId);
+        .get(threadId, advisorThreadId, threadId, advisorThreadId);
       if (!owned) return { available: false };
       try {
         const thread = await bb.sdk.threads.get({ threadId: advisorThreadId });
@@ -3019,6 +3035,73 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  const reviewerRequestListeners = new Map<
+    string,
+    Set<(interaction: ReviewerInteraction) => void>
+  >();
+
+  try {
+    bb.events.on("interaction.pending", ({ thread, interaction }) => {
+      for (const listener of reviewerRequestListeners.get(thread.id) ?? []) {
+        listener(interaction);
+      }
+    });
+  } catch (error) {
+    bb.log.warn(`Advisor cannot hear reviewer requests as they arrive on this bb: ${describeError(error)}`);
+  }
+
+  async function pendingReviewerRequests(
+    advisorThreadId: string,
+    signal: AbortSignal,
+  ): Promise<readonly ReviewerInteraction[]> {
+    try {
+      return await bb.sdk.threads.interactions.list({
+        threadId: advisorThreadId,
+        signal,
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  function watchReviewerRequest(
+    advisorThreadId: string,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    return new Promise((resolve) => {
+      if (signal.aborted) {
+        resolve(null);
+        return;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const listeners = reviewerRequestListeners.get(advisorThreadId) ?? new Set();
+      reviewerRequestListeners.set(advisorThreadId, listeners);
+      const finish = (reason: string | null): void => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        listeners.delete(listen);
+        if (listeners.size === 0) reviewerRequestListeners.delete(advisorThreadId);
+        resolve(reason);
+      };
+      const onAbort = (): void => finish(null);
+      const listen = (interaction: ReviewerInteraction): void => {
+        const reason = reviewerRequestReason(interaction);
+        if (reason !== null && !signal.aborted) finish(reason);
+      };
+      const poll = async (): Promise<void> => {
+        for (const interaction of await pendingReviewerRequests(advisorThreadId, signal)) {
+          listen(interaction);
+        }
+        if (!signal.aborted && listeners.has(listen)) {
+          timer = setTimeout(() => void poll(), REVIEWER_REQUEST_POLL_MS);
+        }
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      listeners.add(listen);
+      void poll();
+    });
+  }
+
   /**
    * The newest assistant reply the reviewer wrote at or after `sentAtMs` that
    * carries the result block.
@@ -3073,7 +3156,12 @@ export default async function plugin(bb: BbPluginApi) {
     // Every non-review exit goes through here, so a failure is always recorded
     // as an incident and can never be silently absent from the panel.
     const unavailable = (reason: string): AdvisorOutcome => {
-      recordIncident(primaryThreadId, timeline.maxSeq, reason);
+      recordIncident(
+        primaryThreadId,
+        timeline.maxSeq,
+        reason,
+        run.promptSent ? run.advisorThreadId : "",
+      );
       return { kind: "unavailable", reason };
     };
 
@@ -3241,6 +3329,15 @@ export default async function plugin(bb: BbPluginApi) {
     const onAbort = (): void => stopAdvisor();
     signal?.addEventListener("abort", onAbort, { once: true });
 
+    const requestWatch = new AbortController();
+    const reviewerRequest = watchReviewerRequest(advisorThreadId, requestWatch.signal);
+    void reviewerRequest.then((reason) => {
+      if (reason !== null) requestWatch.abort();
+    });
+    const waitSignal = signal
+      ? AbortSignal.any([signal, requestWatch.signal])
+      : requestWatch.signal;
+
     const timeoutMs = currentSettings.timeoutSeconds * 1000;
     const { finalizeAfterMs } = reviewBudget(currentSettings.timeoutSeconds);
     const finalizeTimer = setTimeout(() => {
@@ -3269,26 +3366,32 @@ export default async function plugin(bb: BbPluginApi) {
       ({ idle: waited, lastError: waitError } = await waitForAdvisorIdle(
         advisorThreadId,
         timeoutMs,
-        signal,
+        waitSignal,
       ));
       // A verdict landing seconds past the deadline is still this round's, so
       // a straggler gets a short grace before it is interrupted.
-      if (!waited && !signal?.aborted) {
+      if (!waited && !waitSignal.aborted) {
         ({ idle: waited, lastError: waitError } = await waitForAdvisorIdle(
           advisorThreadId,
           LATE_REPLY_GRACE_MS,
-          signal,
+          waitSignal,
         ));
       }
     } finally {
       clearTimeout(finalizeTimer);
       signal?.removeEventListener("abort", onAbort);
+      requestWatch.abort();
     }
+    const requestReason = waited ? null : await reviewerRequest;
     if (!waited) {
       stopAdvisor();
       // A timeout is self-describing; the exception name and the reviewer's
       // thread id are developer detail that ends up verbatim in the panel.
-      bb.log.warn(`Advisor review timed out: ${describeError(waitError)}`);
+      bb.log.warn(
+        requestReason === null
+          ? `Advisor review timed out: ${describeError(waitError)}`
+          : `Advisor review stopped: ${requestReason}`,
+      );
     }
 
     let output: string | null;
@@ -3313,9 +3416,10 @@ export default async function plugin(bb: BbPluginApi) {
       output = await readAdvisorReplySince(advisorThreadId, sentAtMs);
       if (output === null) {
         return unavailable(
-          signal?.aborted
-            ? CANCELLED_REASON
-            : `the review did not finish within ${currentSettings.timeoutSeconds}s. Raise "Review timeout" in Settings → Extensions → Advisor if reviews need longer`,
+          requestReason ??
+            (signal?.aborted
+              ? CANCELLED_REASON
+              : `the review did not finish within ${currentSettings.timeoutSeconds}s. Raise "Review timeout" in Settings → Extensions → Advisor if reviews need longer`),
         );
       }
     }

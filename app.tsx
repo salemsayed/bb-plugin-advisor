@@ -865,6 +865,67 @@ function AdvisorComposerBanner() {
 const SUBTLE_BUTTON =
   "h-7 rounded-md border border-border bg-card px-2.5 text-xs text-foreground hover:bg-state-hover disabled:cursor-not-allowed disabled:opacity-50";
 
+function ReviewerWork({
+  threadId,
+  advisorThreadId,
+}: {
+  threadId: string;
+  advisorThreadId: string;
+}) {
+  const rpc = useRpc<Contract>();
+  const [showWork, setShowWork] = useState(false);
+  const [reviewerAvailable, setReviewerAvailable] = useState<boolean | null>(
+    null,
+  );
+
+  const openWork = useCallback(() => {
+    setShowWork((value) => !value);
+    if (reviewerAvailable !== null) return;
+    void rpc
+      .call("reviewerThreadAvailable", { threadId, advisorThreadId })
+      .then((result) => setReviewerAvailable(result.available))
+      .catch(() => setReviewerAvailable(false));
+  }, [rpc, threadId, advisorThreadId, reviewerAvailable]);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={openWork}
+        aria-expanded={showWork}
+        className={`mt-2 ${SUBTLE_BUTTON}`}
+      >
+        {showWork ? "Hide the reviewer's work" : "Show the reviewer's work"}
+      </button>
+      {showWork ? (
+        reviewerAvailable === false ? (
+          <p className="mt-2 text-2xs text-subtle-foreground">
+            The reviewer thread for this review is no longer available.
+          </p>
+        ) : reviewerAvailable === null ? (
+          <p className="mt-2 text-2xs text-subtle-foreground">
+            Loading the reviewer&apos;s work…
+          </p>
+        ) : (
+          <div className="mt-2 overflow-hidden rounded-lg border border-border">
+            {/* variant="timeline" renders no composer on purpose:
+                chatting with the reviewer would pollute the context
+                that makes repeat detection meaningful. layout
+                "document" grows with content and defers scrolling to
+                the panel, so the transcript is a flowing excerpt rather
+                than a nested scroll region that traps the wheel. */}
+            <ThreadChat
+              threadId={advisorThreadId}
+              variant="timeline"
+              layout="document"
+            />
+          </div>
+        )
+      ) : null}
+    </>
+  );
+}
+
 function ReviewRow({
   threadId,
   review,
@@ -881,10 +942,6 @@ function ReviewRow({
   onResolved: () => void;
 }) {
   const rpc = useRpc<Contract>();
-  const [showWork, setShowWork] = useState(false);
-  const [reviewerAvailable, setReviewerAvailable] = useState<boolean | null>(
-    null,
-  );
   const [reason, setReason] = useState("");
   const [resolving, setResolving] = useState(false);
   const [continuing, setContinuing] = useState(false);
@@ -897,15 +954,6 @@ function ReviewRow({
   // re-checked and closed it.
   const settled = review.resolvedAt !== null || review.closedAt !== null;
   const lifecycle = lifecycleOf(review, now);
-
-  const openWork = useCallback(() => {
-    setShowWork((value) => !value);
-    if (reviewerAvailable !== null || !advisorThreadId) return;
-    void rpc
-      .call("reviewerThreadAvailable", { threadId, advisorThreadId })
-      .then((result) => setReviewerAvailable(result.available))
-      .catch(() => setReviewerAvailable(false));
-  }, [rpc, threadId, advisorThreadId, reviewerAvailable]);
 
   const setResolved = useCallback(
     (next: boolean, decision: "not-an-issue" | "wont-fix") => {
@@ -1096,41 +1144,7 @@ function ReviewRow({
           ) : null}
 
           {advisorThreadId ? (
-            <>
-              <button
-                type="button"
-                onClick={openWork}
-                aria-expanded={showWork}
-                className={`mt-2 ${SUBTLE_BUTTON}`}
-              >
-                {showWork ? "Hide the reviewer's work" : "Show the reviewer's work"}
-              </button>
-              {showWork ? (
-                reviewerAvailable === false ? (
-                  <p className="mt-2 text-2xs text-subtle-foreground">
-                    The reviewer thread for this review is no longer available.
-                  </p>
-                ) : reviewerAvailable === null ? (
-                  <p className="mt-2 text-2xs text-subtle-foreground">
-                    Loading the reviewer&apos;s work…
-                  </p>
-                ) : (
-                  <div className="mt-2 overflow-hidden rounded-lg border border-border">
-                    {/* variant="timeline" renders no composer on purpose:
-                        chatting with the reviewer would pollute the context
-                        that makes repeat detection meaningful. layout
-                        "document" grows with content and defers scrolling to
-                        the panel, so the transcript is a flowing excerpt rather
-                        than a nested scroll region that traps the wheel. */}
-                    <ThreadChat
-                      threadId={advisorThreadId}
-                      variant="timeline"
-                      layout="document"
-                    />
-                  </div>
-                )
-              ) : null}
-            </>
+            <ReviewerWork threadId={threadId} advisorThreadId={advisorThreadId} />
           ) : null}
         </div>
       ) : null}
@@ -1139,9 +1153,11 @@ function ReviewRow({
 }
 
 function IncidentRow({
+  threadId,
   incident,
   now,
 }: {
+  threadId: string;
   incident: PanelIncident;
   now: number;
 }) {
@@ -1157,6 +1173,12 @@ function IncidentRow({
         No review ran {formatWhen(incident.createdAt, now)} — nothing was
         checked, so this is not an approval.
       </p>
+      {incident.advisorThreadId ? (
+        <ReviewerWork
+          threadId={threadId}
+          advisorThreadId={incident.advisorThreadId}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1397,6 +1419,7 @@ function AdvisorPanel({ threadId }: ExperimentalThreadActionTabProps) {
             ) : (
               <IncidentRow
                 key={`i${entry.incident.id}`}
+                threadId={threadId}
                 incident={entry.incident}
                 now={now}
               />
