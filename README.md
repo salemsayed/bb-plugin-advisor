@@ -40,8 +40,9 @@ outside opinion without changing bb core:
   same environment so it can inspect the actual workspace.
 - **Persistent.** Findings are chains with memory, not one-off comments. The
   same unresolved defect raised again joins its chain, counts as *re-raised*,
-  and is held at its strongest severity — repetition means the agent was told
-  and did not act, so a finding can escalate but never soften. A new
+  and is held at its strongest severity, so a finding can escalate but never
+  soften. Before repeating it, the reviewer weighs any explanation the agent or
+  user gave that it does not apply. A new
   occurrence of a problem that was already dealt with starts its own chain.
 - **Fail-closed.** A timeout, a provider that cannot host a reviewer, or a
   reviewer that fails to start is reported as `Advisor unavailable` with the
@@ -308,8 +309,8 @@ Every finding carries its own lifecycle, shown in the thread panel:
   handed over: the tool result, and the Advisor message sent into the next
   turn. *Sent is not resolved* — it only means the agent has seen the
   text.
-- **Re-raised N×** — the advisor flagged it again, so it demonstrably was not
-  addressed.
+- **Re-raised N×** — the advisor flagged it again after weighing any
+  explanation given since, and still considers it open.
 - **Advisor re-checked and closed it** — the reviewer is shown its own open
   findings each round and may name keys on a `resolved:` line that it verified
   are fixed. Silence never closes anything, and it cannot close a key it did
