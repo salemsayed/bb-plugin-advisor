@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Replace a reviewer after 10 reviews of the same thread. A reviewer thread was reused for the life of the thread it reviews, and every review resends its whole conversation to the model, so a review cost more tokens with each round: on one install's 690 reviews over two days, a reviewer's first review averaged 179,000 tokens and its 11th and later averaged 573,000. The new reviewer starts with the full instructions and timeline, the thread's open findings and the user's decisions, so finding keys, repeats and escalation carry over. The replaced reviewer is archived; its reviews keep their link to it.
+- Record a review of an archived or deleted thread as skipped, not unavailable. bb archives the reviewer with the thread, so a thread archived before or during its review, such as an automation worker its scheduler archives when the run ends, used to file an incident ("the reviewer thread could not be started", "the reviewer finished without returning a review"). The usage ledger now records the run as `skipped` with `thread-archived` or `thread-deleted`, and no incident is filed.
+- Say how Advisor closed a finding. The result block has a new `withdrawn:` line for findings the reviewer accepts do not apply, next to `resolved:` for findings it verified are fixed, and the chain root records `closed_kind` (`corrected` or `withdrawn`). Chains closed before this release keep an empty `closed_kind`.
+- Add the `turnReview` RPC, so a plugin that archives its threads, such as a scheduler, can wait for Advisor's review of a thread's last turn and read its outcome and finding before it does.
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later.
+
 ## 0.1.14
 
 - Stop waiting for a reviewer that asked for something nobody can answer. A hidden Claude Code reviewer in Accept Edits mode could ask to approve a shell command, wait unseen until the review timeout, and come back as "did not finish within 120s" with advice to raise the timeout (#9). Advisor now watches the reviewer thread while it waits; when the reviewer asks for a command approval, a file change, a permission or an answer, Advisor stops it at once and reports `Advisor unavailable: the reviewer asked for …`, naming the command. It never approves or answers the request, and the run is not a pass. The usage ledger records the run with that reason, and an unavailable entry in the panel now has **Show the reviewer's work** when a reviewer ran, so the request can be read.

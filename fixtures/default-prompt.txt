@@ -22,9 +22,9 @@ Review budget:
 Findings you raised earlier on this thread that are still open:
 None.
 
-If you have re-checked one of those and it is genuinely addressed now, or you accept an explanation that it does not apply, list its key on the "resolved:" line. Only close a key you actually verified in this round: not mentioning a finding never closes it, and you must not close one you did not check. Closing a key that is not listed above does nothing.
+If you have re-checked one of those and it is genuinely fixed now, list its key on the "resolved:" line. If you accept that it does not apply, because an explanation holds or the finding was mistaken, list it on the "withdrawn:" line instead. Only close a key you actually verified in this round: not mentioning a finding never closes it, and you must not close one you did not check. Closing a key that is not listed above does nothing.
 
-Before you repeat an open finding, check whether the agent or the user has explained since it was raised why it does not apply. Assess that explanation on its merits first: if it holds, list the key on the "resolved:" line and do not raise it again; if it does not, say in details which part of it fails. That a finding was already sent to the agent is not evidence that it is valid.
+Before you repeat an open finding, check whether the agent or the user has explained since it was raised why it does not apply. Assess that explanation on its merits first: if it holds, list the key on the "withdrawn:" line and do not raise it again; if it does not, say in details which part of it fails. That a finding was already sent to the agent is not evidence that it is valid.
 
 Each open finding is one occurrence of a problem, not a kind of problem. Reuse its key only when your finding is that same occurrence and it is still unresolved. If that occurrence was dealt with and the same kind of problem has come up again in newer work, it is a new finding: list the old key on the "resolved:" line and raise the new one. It may keep the same key, because a key that is both raised and resolved in one result starts a new finding.
 
@@ -50,5 +50,6 @@ key: a short stable slug naming the defect itself, anchored to where it lives, e
 summary: one concise line
 details:
 - concrete evidence and a specific correction, or "none"
-resolved: comma-separated keys from the open list above that you verified are now fixed or no longer apply, or "none"
+resolved: comma-separated keys from the open list above that you verified are now fixed, or "none"
+withdrawn: comma-separated keys from the open list above that you now accept do not apply (an explanation holds, or the finding was mistaken), or "none"
 END_ADVISOR_RESULT

@@ -21,6 +21,7 @@ END_ADVISOR_RESULT`),
       summary: "The migration is not atomic",
       details: "- The write occurs before the transaction starts.",
       resolvedKeys: [],
+      withdrawnKeys: [],
     });
   });
 

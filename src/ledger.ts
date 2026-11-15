@@ -284,7 +284,7 @@ export interface RunStart {
 }
 
 export interface RunFinish {
-  outcome: Exclude<RunOutcome, "skipped">;
+  outcome: RunOutcome;
   reason: string;
   reviewId: number | null;
   severity: string | null;
@@ -421,6 +421,18 @@ export function createReviewLedger(db: LedgerDatabase) {
           const parsed = ledgerRowSchema.safeParse(row);
           return parsed.success ? [toEntry(parsed.data)] : [];
         });
+    },
+
+    abandonUnfinished(reason: string, at: number): number {
+      return db
+        .prepare(
+          `UPDATE advisor_review_runs SET
+             outcome = 'unavailable', reason = ?, finished_at = ?,
+             elapsed_ms = ? - started_at,
+             usage_status = CASE WHEN usage_status = 'pending' THEN 'unknown' ELSE usage_status END
+           WHERE finished_at IS NULL`,
+        )
+        .run(reason, at, at).changes;
     },
 
     forget(primaryThreadId: string): void {
