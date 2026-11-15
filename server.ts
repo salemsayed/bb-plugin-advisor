@@ -1268,6 +1268,13 @@ export default async function plugin(bb: BbPluginApi) {
      )`,
   ]);
   const ledger = createReviewLedger(db);
+  const abandonedRuns = ledger.abandonUnfinished(
+    "Advisor stopped before the review finished",
+    Date.now(),
+  );
+  if (abandonedRuns > 0) {
+    bb.log.info(`Advisor closed ${abandonedRuns} review run(s) left unfinished when it last stopped.`);
+  }
 
   const primaryContexts = new Map<string, PrimaryContext>();
   const inFlight = new Map<string, Promise<AdvisorOutcome>>();
