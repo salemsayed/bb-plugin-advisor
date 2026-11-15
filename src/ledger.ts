@@ -284,7 +284,7 @@ export interface RunStart {
 }
 
 export interface RunFinish {
-  outcome: Exclude<RunOutcome, "skipped">;
+  outcome: RunOutcome;
   reason: string;
   reviewId: number | null;
   severity: string | null;

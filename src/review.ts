@@ -30,6 +30,7 @@ export interface AdvisorReview {
  */
 export interface AdvisorParsedReview extends AdvisorReview {
   resolvedKeys: string[];
+  withdrawnKeys: string[];
 }
 
 /**
@@ -105,7 +106,7 @@ export function parseAdvisorOutput(
   const key = normalizeKey(keyMatch?.[1] ?? "");
   const summaryMatch = output.match(/^\s*summary\s*:\s*(.+?)\s*$/im);
   const detailsMatch = output.match(
-    /(?:^|\r?\n)[ \t]*details[ \t]*:[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n[ \t]*(?:END_ADVISOR_RESULT|resolved[ \t]*:)[^\n]*(?:\r?\n[\s\S]*)?$|$)/i,
+    /(?:^|\r?\n)[ \t]*details[ \t]*:[ \t]*(?:\r?\n)?([\s\S]*?)(?:\r?\n[ \t]*(?:END_ADVISOR_RESULT|resolved[ \t]*:|withdrawn[ \t]*:)[^\n]*(?:\r?\n[\s\S]*)?$|$)/i,
   );
   const fallback = output
     .split("\n")
@@ -121,17 +122,26 @@ export function parseAdvisorOutput(
   const details = (detailsMatch?.[1] ?? output)
     .replace(/^\s*[-*]\s*none\.?\s*$/im, "")
     .trim();
-  const resolvedMatch = output.match(/^[ \t]*resolved[ \t]*:[ \t]*(.+?)[ \t]*$/im);
-  const resolvedKeys = [
+  const resolvedKeys = keyList(output, "resolved");
+  const withdrawnKeys = keyList(output, "withdrawn").filter(
+    (candidate) => !resolvedKeys.includes(candidate),
+  );
+
+  return { severity, key, summary, details, resolvedKeys, withdrawnKeys };
+}
+
+function keyList(output: string, field: "resolved" | "withdrawn"): string[] {
+  const match = output.match(
+    new RegExp(`^[ \\t]*${field}[ \\t]*:[ \\t]*(.+?)[ \\t]*$`, "im"),
+  );
+  return [
     ...new Set(
-      (resolvedMatch?.[1] ?? "")
+      (match?.[1] ?? "")
         .split(/[,\s]+/)
         .map((candidate) => normalizeKey(candidate))
         .filter((candidate) => candidate.length > 0 && candidate !== "none"),
     ),
   ];
-
-  return { severity, key, summary, details, resolvedKeys };
 }
 
 export function formatReview(finding: AdvisorFinding): string {

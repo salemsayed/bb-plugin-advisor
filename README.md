@@ -233,9 +233,9 @@ The reviewer reads it before each review; the filename is configurable.
 ## What the reviewer sees
 
 Each review is one message to the reviewer thread. The first review of a
-thread, and any review after the reviewer was respawned or its context was
-compacted or cleared, carries the full instructions and the primary timeline
-of the last 12 conversation segments. Every later review is shorter: it
+thread, and any review after the reviewer was respawned, replaced after 10
+reviews, or had its context compacted or cleared, carries the full instructions
+and the primary timeline of the last 12 conversation segments. Every later review is shorter: it
 repeats the review budget and the result format and sends only the timeline
 entries after the sequence the reviewer last reviewed, so a long chat does
 not resend the same history every turn and the reviewer's earlier messages
@@ -269,7 +269,7 @@ reviewer must not raise a rejected interpretation again under any key or
 wording, while a different defect nearby, or harm the decision did not cover,
 is still reported under a new key. Before repeating an open finding, the
 reviewer has to weigh any explanation the agent or user gave that it does not
-apply, and close it on the `resolved:` line when the explanation holds.
+apply, and close it on the `withdrawn:` line when the explanation holds.
 
 ## The life of a finding
 
@@ -307,10 +307,13 @@ Every finding carries its own lifecycle, shown in the thread panel:
   explanation given since, and still considers it open.
 - **Advisor re-checked and closed it** — the reviewer is shown its own open
   findings each round and may name keys on a `resolved:` line that it verified
-  are fixed. Silence never closes anything, and it cannot close a key it did
-  not raise on this thread. A finding that comes back after closure is a new
-  occurrence with its own chain, so the agent is not told it ignored advice it
-  acted on.
+  are fixed, or on a `withdrawn:` line when it accepts that a finding does not
+  apply (an explanation holds, or the finding was mistaken). The chain root
+  records which in `closed_kind`: `corrected` or `withdrawn` (empty for a chain
+  that is open, or that was closed before 0.1.15, when one line covered both).
+  Silence never closes anything, and it cannot close a key it did not raise on
+  this thread. A finding that comes back after closure is a new occurrence with
+  its own chain, so the agent is not told it ignored advice it acted on.
 - **Decided by the user** — **Not an issue** or **Won't fix**, with an
   optional note, stored on the chain root. A user cannot self-certify a fix:
   **Fixed** is established only when a later Advisor round re-checks and
@@ -374,11 +377,29 @@ thread; **Show the reviewer's work** on the incident shows the request. Raising
 the timeout does not help. A retry can still pass when the reviewer works from
 the supplied transcript instead of running commands.
 
+A thread that is archived or deleted before or during its review is not a
+failed review. bb archives the reviewer with the thread, so the review cannot
+finish, and Advisor records the run as `skipped` with the reason
+`thread-archived` or `thread-deleted` instead of unavailable. No incident is
+filed, and the thread's history is unchanged. This is common for automation
+workers, which their scheduler archives as soon as their run ends.
+
 ## The reviewer thread
 
 Reviewer threads are hidden and reused so the advisor keeps its own context. A
 session is bound to the environment it was spawned into; if the primary thread
 moves, the reviewer is respawned rather than left inspecting the old checkout.
+
+A reviewer is replaced after 10 reviews of the same thread. Each review resends
+the reviewer's whole conversation to the model, so the tokens a review costs
+grow with every round: on one bb install's 690 reviews over two days, the
+first review of a reviewer averaged 179,000 tokens and the 11th and later
+averaged 573,000. The new reviewer gets the full instructions and timeline,
+the thread's open findings and the user's decisions, which is all the state a
+finding chain needs, so keys, repeats and escalation carry over. The replaced
+reviewer is archived, and its reviews keep their link to it. A reviewer that
+is still finishing another review of the same thread is not replaced until
+that review ends.
 
 The reviewer's permission mode is negotiated per review against what the
 provider actually advertises, narrowest first. bb briefly offered a `readonly`
@@ -417,7 +438,7 @@ newest first).
 | Column | Meaning |
 | --- | --- |
 | `trigger` | `tool`, `post-turn` or `manual` |
-| `outcome`, `reason` | `reviewed`, `unavailable` with its reason, or `skipped` with `routine`, `cadence` or `waiting-for-children` |
+| `outcome`, `reason` | `reviewed`, `unavailable` with its reason, or `skipped` with `routine`, `cadence`, `waiting-for-children`, `thread-archived` or `thread-deleted` |
 | `review_id`, `severity` | the stored review and its verdict |
 | `source_seq` | primary timeline sequence reviewed |
 | `evidence_mode`, `evidence_from_seq`, `evidence_to_seq`, `prompt_chars` | `full` or `incremental`, the entries sent and the size of the message |
@@ -432,7 +453,28 @@ Usage is the change in the reviewer thread's own token counters across the
 run, read a moment after it ends. Providers count differently: Codex includes
 cached tokens in `input_tokens`, Claude Code reports them only in
 `cached_input_tokens`. Runs on the same reviewer that overlap, such as a tool
-review interrupting a post-turn review, can share usage between them.
+review interrupting a post-turn review, can share usage between them. A run
+skipped because its thread was archived mid-review keeps the reviewer and the
+usage it had already spent.
+
+### Review state for other plugins
+
+A plugin that ends a thread's life, such as a scheduler that archives its
+worker when a run ends, can wait for Advisor's review of the last turn with the
+`turnReview` RPC (`bb plugin rpc call advisor turnReview`). Input
+`{ "threadId", "since"? }`, where `since` is a millisecond timestamp, usually
+when the turn ended. It answers:
+
+| `state` | Meaning |
+| --- | --- |
+| `pending` | a completed-turn review of the thread is starting, running, or waiting for its child threads |
+| `settled` | the newest run recorded at or after `since` has finished; `run` has its trigger, outcome and reason, and `finding` the stored verdict when there is one, with `open` (not settled by the user or closed by Advisor) and `meetsThreshold` (at or above **Minimum severity**) |
+| `none` | nothing recorded since `since` and nothing running. Right after a turn ends this can mean Advisor has not picked the turn up yet, so ask again for a few seconds before treating it as no review |
+| `off` | Advisor does not review this thread's completed turns: it is switched off for the thread, completed-turn review is off, or the thread is not reviewed |
+
+`timeoutSeconds` is the current **Review timeout**, so a caller can bound its
+wait. The RPC only reads; Advisor itself still queues an open finding for the
+thread's next turn.
 
 ## Security and trust
 
