@@ -56,7 +56,7 @@ type Decision = PanelReview["decision"];
 const REVIEW_LIFECYCLE_LABEL: Record<ReviewLifecycle, string> = {
   unreviewed: "Not reviewed",
   waiting: "Waiting for completed turn",
-  "waiting-for-children": "Waiting for child threads",
+  "waiting-for-children": "Waiting for running work",
   pending: "Review pending",
   approved: "Approved",
   "changes-requested": "Changes requested",
@@ -172,7 +172,7 @@ const SEVERITY_HINT: Record<Standing, string> = {
 };
 
 const WAITING_FOR_CHILDREN_HINT =
-  "Advisor reviews this turn once the child threads it started have finished and reported back.";
+  "Advisor reviews this turn once the child threads and background agents it started have finished and reported back.";
 
 /** Absolute time is noise in a thread you are reading now; elapsed time is not. */
 function formatWhen(epochMs: number, now: number): string {
@@ -427,7 +427,7 @@ function badgeStanding(
   if (data.lifecycle === "waiting-for-children") {
     return {
       kind: "waiting",
-      name: "Waiting for child threads",
+      name: REVIEW_LIFECYCLE_LABEL["waiting-for-children"],
       label: WAITING_FOR_CHILDREN_HINT,
       repeatCount: 0,
     };

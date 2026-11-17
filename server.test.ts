@@ -4015,7 +4015,7 @@ describe("child threads still running (#25)", () => {
 
   it("reviews as before when the child threads cannot be listed", async () => {
     const { harness, spawn } = await loadAutoAdvisor(BLOCKER_OUTPUT);
-    harness.sdk.stub("threads.listRunning", async () => {
+    harness.sdk.stub("threads.list", async () => {
       throw new Error("listing is down");
     });
     await harness.emitThreadEvent("thread.idle", {
