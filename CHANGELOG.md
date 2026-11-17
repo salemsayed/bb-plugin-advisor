@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Do not flag an honest wait on background work. A turn that ended with an honest status ("the worker is still re-verifying the migrations; a watcher wakes me when it commits") was reviewed at once and got a concern asking the agent to complete the wait when the child thread it waited for had ended its turn while its own background jobs still ran: the child was idle, so Advisor neither waited nor told the reviewer about it, and the reviewer, checking the child, saw no running work. Every review prompt now says that an answer which reports work as still in progress and claims no result from it is not a finding, and lists child threads that ended their turn with background agents, workflows or commands still running, and the thread's own running background work, with bb's counts. A completed turn also waits, as for a running child thread, while a child thread or the thread itself still has background agents or workflows running; background commands are listed but never hold a review back, because a server or watcher may never end. A claim that unfinished work is done is still a finding. The header button reads **Waiting for running work** (#42, reported by @k0d3r1s).
+
 ## 0.1.15
 
 - Replace a reviewer after 10 reviews of the same thread. A reviewer thread was reused for the life of the thread it reviews, and every review resends its whole conversation to the model, so a review cost more tokens with each round: on one install's 690 reviews over two days, a reviewer's first review averaged 179,000 tokens and its 11th and later averaged 573,000. The new reviewer starts with the full instructions and timeline, the thread's open findings and the user's decisions, so finding keys, repeats and escalation carry over. The replaced reviewer is archived; its reviews keep their link to it.

@@ -28,6 +28,7 @@
     "src/reviewer-request.ts",
     "src/schedule.ts",
     "src/turn-start.ts",
+    "src/pending-work.ts",
     "scripts/build.mjs",
     "dist/app.css",
     "dist/app.js",

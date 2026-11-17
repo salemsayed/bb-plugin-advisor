@@ -54,10 +54,13 @@ Advisor reviews a thread through three complementary paths:
    public answer, the reviewer checks that answer and the work it claims.
    Actionable late findings are sent to the agent when its next turn starts.
    A turn that already ran the tool is not reviewed again after it goes idle.
-   A turn that ends while child threads it started are still running is not
-   reviewed on its own: waiting for them is the correct next step, and bb
-   wakes the agent when they report. Advisor reviews the turn that ends once
-   they have finished. Routine turns, with no tool calls or edits and a
+   A turn that ends while work it started is still running is not reviewed on
+   its own: a child thread that is still running, a background agent or
+   workflow of the thread itself, or one that a child thread left running
+   when its turn ended. Waiting for that work is the correct next step, and
+   bb wakes the agent when it reports. Advisor reviews the turn that ends once
+   it has finished. Background commands never hold a review back, because a
+   server or watcher may run for good. Routine turns, with no tool calls or edits and a
    short answer, are skipped by default; the next review covers everything
    they contained. See [Completed-turn schedule](#completed-turn-schedule).
 3. **Review now** — the thread panel can start the same review on demand. If
@@ -66,13 +69,17 @@ Advisor reviews a thread through three complementary paths:
 
 A button in the thread header advertises the review lifecycle independently
 from the agent turn and opens the Advisor tab: **Waiting for completed turn**,
-**Waiting for child threads**, **Review pending**, **Approved**, **Changes
+**Waiting for running work**, **Review pending**, **Approved**, **Changes
 requested**, or **Review unavailable**. On a phone it sits at the top of the
 thread menu.
 
 Every review is told which of the thread's child threads are still running,
-and that an answer honestly waiting for them is not a finding; only a claim that their work is done, or a conclusion that
-depends on results they have not returned, is.
+which child threads ended their turn with background agents, workflows or
+commands still running, and which background work of the thread itself is
+still running. Every review is also told that an answer honestly reporting
+work as still in progress, and claiming no result from it, is not a finding;
+only a claim that unfinished work is done, a conclusion that depends on
+results that have not come back, or a status the evidence contradicts, is.
 
 A late finding stays attached to the completed turn and offers **Fix in new
 turn**, which starts an agent-only corrective follow-up with the finding
@@ -467,7 +474,7 @@ when the turn ended. It answers:
 
 | `state` | Meaning |
 | --- | --- |
-| `pending` | a completed-turn review of the thread is starting, running, or waiting for its child threads |
+| `pending` | a completed-turn review of the thread is starting, running, or waiting for work the thread started |
 | `settled` | the newest run recorded at or after `since` has finished; `run` has its trigger, outcome and reason, and `finding` the stored verdict when there is one, with `open` (not settled by the user or closed by Advisor) and `meetsThreshold` (at or above **Minimum severity**) |
 | `none` | nothing recorded since `since` and nothing running. Right after a turn ends this can mean Advisor has not picked the turn up yet, so ask again for a few seconds before treating it as no review |
 | `off` | Advisor does not review this thread's completed turns: it is switched off for the thread, completed-turn review is off, or the thread is not reviewed |

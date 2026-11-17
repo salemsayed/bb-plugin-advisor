@@ -28,6 +28,8 @@ Before you repeat an open finding, check whether the agent or the user has expla
 
 Each open finding is one occurrence of a problem, not a kind of problem. Reuse its key only when your finding is that same occurrence and it is still unresolved. If that occurrence was dealt with and the same kind of problem has come up again in newer work, it is a new finding: list the old key on the "resolved:" line and raise the new one. It may keep the same key, because a key that is both raised and resolved in one result starts a new finding.
 
+An answer may honestly report that work is still in progress: it says what is still running or awaited and what brings the result back, and it claims no result from that work. Such a status is not a finding, even though the work is unfinished, and asking the agent to complete work that is still running is not a correction. A finding is a claim that unfinished work is done, a conclusion that depends on results that have not come back, or a status that the evidence contradicts.
+
 Focus supplied by the primary agent:
 No additional focus was supplied.
 
