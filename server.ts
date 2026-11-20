@@ -873,6 +873,9 @@ const EVIDENCE_SOURCES = `How to read the timeline:
 const EXPLANATIONS_FIRST =
   'Before you repeat an open finding, check whether the agent or the user has explained since it was raised why it does not apply. Assess that explanation on its merits first: if it holds, list the key on the "withdrawn:" line and do not raise it again; if it does not, say in details which part of it fails. That a finding was already sent to the agent is not evidence that it is valid.';
 
+const OPEN_UNTIL_CLOSED =
+  'An open finding stays open until you list its key on the "resolved:" or "withdrawn:" line; a pass, or a result about something else, leaves it open. A result that names its key with any severity other than pass sends it to the agent again as another changes request, whatever its details say. Name it again when the newest entries give a reason: a check that bears on it failed, wherever it ran and whoever ran it, even if the agent says other results are still pending; the agent claims or acts as if it is fixed or verified without the evidence for that, even though a pass would leave the finding open; the agent ignores or contradicts it; or new evidence makes it worse. Do not name it only because it is still open, because it is still unresolved when you re-check it, or to remind the agent. When the newest entries acknowledge it, say what is still awaited and how its result will be checked or reported, show no failed check, and claim nothing beyond the evidence, leave its key off every line and return pass, or report a different finding.';
+
 function openFindingsSection(args: PromptFindings): string {
   return args.openFindings.length === 0
     ? "None."
@@ -909,7 +912,7 @@ ${fence.close}`
 
 const RESULT_BLOCK = `ADVISOR_RESULT
 severity: pass|nit|concern|blocker
-key: a short stable slug naming the defect itself, anchored to where it lives, e.g. server-ts-runreview-timeout-untested. Use the SAME key whenever you raise the same unresolved defect again, even if you reword it or rate it differently. Use "none" for a pass.
+key: a short stable slug naming the defect itself, anchored to where it lives, e.g. server-ts-runreview-timeout-untested. Use the SAME key whenever you raise the same unresolved defect again, even if you reword it or rate it differently; raising an open finding's key sends it to the agent again, so do that only when the open-finding rules above call for it. Use "none" for a pass.
 summary: one concise line
 details:
 - concrete evidence and a specific correction, or "none"
@@ -964,6 +967,8 @@ If you have re-checked one of those and it is genuinely fixed now, list its key 
 
 ${EXPLANATIONS_FIRST}
 
+${OPEN_UNTIL_CLOSED}
+
 Each open finding is one occurrence of a problem, not a kind of problem. Reuse its key only when your finding is that same occurrence and it is still unresolved. If that occurrence was dealt with and the same kind of problem has come up again in newer work, it is a new finding: list the old key on the "resolved:" line and raise the new one. It may keep the same key, because a key that is both raised and resolved in one result starts a new finding.
 
 ${userDecisionsSection(args)}${pendingWorkSection(args.pendingWork ?? NO_PENDING_WORK)}${IN_PROGRESS_STATUS_RULE}
@@ -1009,6 +1014,8 @@ Findings you raised earlier on this thread that are still open:
 ${openFindingsSection(args)}
 
 List a key on the "resolved:" line only when you re-checked it in this round and it is fixed, and on the "withdrawn:" line when you accept that it does not apply. A key that is both raised and resolved in one result starts a new finding. ${EXPLANATIONS_FIRST}
+
+${OPEN_UNTIL_CLOSED}
 
 ${userDecisionsSection(args)}${pendingWorkSection(args.pendingWork ?? NO_PENDING_WORK)}${IN_PROGRESS_STATUS_RULE}
 
