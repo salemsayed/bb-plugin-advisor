@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.17
 
 - Do not repeat an open finding because the agent is still waiting on it. A thread whose open finding needed a test result got a new round of the same `concern` on honest progress updates ("the regression result is still pending; I will report the worker's result when it returns"), asking the agent to do what it had just said it would. It happened most on the first review after Advisor replaced a long-running reviewer: the new reviewer saw only the finding's latest wording ("the test result is still pending"), found it still true, and named the finding's key again to say it was still open, which Advisor records as another round and sends to the agent. In one run the reviewer wrote that the finding "remains open without being repeated as a new issue" in a result that repeated it. Every review prompt now says that an open finding stays open until the reviewer resolves or withdraws it, that naming its key with any severity other than pass sends it to the agent again, that it is raised again when a check that bears on it failed (wherever it ran and whoever ran it, even if the agent says other results are still pending), the agent claims or acts as if it is fixed or verified without the evidence (even though a pass would leave the finding open), the agent ignores or contradicts it, or new evidence makes it worse, and that it is not raised again only because it is still open or still unresolved when the reviewer re-checks it. A progress update that acknowledges the finding, says what is still awaited and how the result will be checked or reported, shows no failed check and claims nothing beyond the evidence gets a pass and leaves the finding open (#45, reported by @k0d3r1s).
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later.
 
 ## 0.1.16
 
