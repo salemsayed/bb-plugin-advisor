@@ -311,7 +311,11 @@ Every finding carries its own lifecycle, shown in the thread panel:
   turn. *Sent is not resolved* — it only means the agent has seen the
   text.
 - **Re-raised N×** — the advisor flagged it again after weighing any
-  explanation given since, and still considers it open.
+  explanation given since, and still considers it open. It re-raises a
+  finding for a reason in the newest work (a check that bears on it failed, a
+  fix claimed without the evidence, the finding ignored or contradicted, or new
+  evidence that makes it worse), not because it is still open or because its
+  fix is planned and waits for a review or approval the agent names.
 - **Advisor re-checked and closed it** — the reviewer is shown its own open
   findings each round and may name keys on a `resolved:` line that it verified
   are fixed, or on a `withdrawn:` line when it accepts that a finding does not
