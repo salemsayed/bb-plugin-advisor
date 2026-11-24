@@ -4060,6 +4060,10 @@ export default async function plugin(bb: BbPluginApi) {
     toolUnavailable: boolean,
   ): Promise<void> {
     const turn = await completedTurn(threadId, answer);
+    if (turn.sourceSeq >= 0 && await completedTurnMovedDirectory(threadId, turn.sourceSeq)) {
+      skipTurn(threadId, turn.sourceSeq, "environment-directory-handoff", true);
+      return;
+    }
     if (await deferForPendingWork(threadId)) {
       skipTurn(threadId, turn.sourceSeq, "waiting-for-children", true);
       return;
@@ -4119,6 +4123,49 @@ export default async function plugin(bb: BbPluginApi) {
         `Advisor could not read the completed turn of ${primaryThreadId}, so it counts as substantive: ${describeError(error)}`,
       );
       return { sourceSeq: -1, activity: null };
+    }
+  }
+
+  async function completedTurnMovedDirectory(
+    threadId: string,
+    sourceSeq: number,
+  ): Promise<boolean> {
+    // BB records the move in the originating turn before it queues the
+    // continuation. The continuation request may be absent at this point.
+    let beforeSeq = sourceSeq + 1;
+    let turnId: string | undefined;
+    try {
+      for (;;) {
+        const events = await bb.sdk.threads.events.list({
+          threadId,
+          beforeSeq: String(beforeSeq),
+          order: "desc",
+          types: ["turn/started", "turn/completed", "system/operation"],
+          limit: "100",
+        });
+        for (const event of events) {
+          if (event.scope.kind !== "turn") continue;
+          if (event.type === "turn/completed") {
+            if (turnId !== undefined || event.data.status !== "completed") return false;
+            turnId = event.scope.turnId;
+          } else if (event.scope.turnId === turnId) {
+            if (event.type === "turn/started") return false;
+            if (
+              event.type === "system/operation" &&
+              event.data.operation === "environment_directory_update" &&
+              event.data.status === "completed"
+            ) return true;
+          }
+        }
+        const oldest = events.at(-1);
+        if (oldest === undefined) return false;
+        beforeSeq = oldest.seq;
+      }
+    } catch (error) {
+      bb.log.warn(
+        `Advisor could not check for a directory handoff on ${threadId}: ${describeError(error)}`,
+      );
+      return false;
     }
   }
 
