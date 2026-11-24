@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.20
+
+- Report a reviewer that fails as a failed wait, not a timeout. When the reviewer thread stopped in error before returning a review, Advisor recorded "the review did not finish within 300s" and suggested raising "Review timeout", although the wait had ended within seconds: 24 such entries in one log ended after 0.5 to 5.6 seconds. The ledger and log now say the wait for the reviewer failed and give its error, also when the short grace wait after it reaches its own deadline. The timeout message and its advice to raise the setting are kept for reviews that really run out of time (#54 by @k0d3r1s).
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later.
+
 ## 0.1.19
 
 - Do not review a turn that hands the thread to another checkout. An agent moved its thread to the checkout where an approved plan would be built and ended its turn so bb could continue there. Advisor started a post-turn review 77 ms later, before bb queued the continuation, and flagged the implementation the agent had said the continuation would do. When bb recorded a successful directory update in the completed turn, Advisor now skips that turn's automatic review and carries its evidence into the next one, so the implementation and its checks are reviewed once the continuation ends. A failed move, or a move in an earlier turn, is reviewed as before (#51, #52 by @k0d3r1s).
