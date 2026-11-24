@@ -3157,6 +3157,15 @@ export default async function plugin(bb: BbPluginApi) {
     );
   }
 
+  function isWaitTimeout(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      (error instanceof Error && error.name === "ThreadWaitTimeoutError") ||
+      message.includes("ThreadWaitTimeoutError") ||
+      message.startsWith("Timed out waiting for thread")
+    );
+  }
+
   /**
    * Whether a `threads.wait` failure is worth retrying inside the budget. The
    * SDK's own deadline and a status that can never turn idle are terminal, and
@@ -3173,12 +3182,10 @@ export default async function plugin(bb: BbPluginApi) {
     const name = error instanceof Error ? error.name : "";
     const message = error instanceof Error ? error.message : String(error);
     return (
-      name === "ThreadWaitTimeoutError" ||
+      isWaitTimeout(error) ||
       name === "ThreadWaitUnreachableError" ||
-      message.includes("ThreadWaitTimeoutError") ||
       message.includes("ThreadWaitUnreachableError") ||
-      message.includes("will not reach idle by waiting alone") ||
-      message.startsWith("Timed out waiting for thread")
+      message.includes("will not reach idle by waiting alone")
     );
   }
 
@@ -3194,13 +3201,15 @@ export default async function plugin(bb: BbPluginApi) {
     signal: AbortSignal | undefined,
   ): Promise<{ idle: boolean; lastError: unknown }> {
     const deadline = Date.now() + budgetMs;
-    let lastError: unknown = new Error(
-      `Timed out waiting for thread ${threadId} to reach status idle.`,
-    );
     let transientFailures = 0;
     for (;;) {
       const remaining = deadline - Date.now();
-      if (remaining <= 0) return { idle: false, lastError };
+      if (remaining <= 0) {
+        return {
+          idle: false,
+          lastError: new Error(`Timed out waiting for thread ${threadId} to reach status idle.`),
+        };
+      }
       try {
         await bb.sdk.threads.wait({
           threadId,
@@ -3210,13 +3219,12 @@ export default async function plugin(bb: BbPluginApi) {
         });
         return { idle: true, lastError: null };
       } catch (error) {
-        lastError = error;
         if (isTerminalWaitError(error, signal)) {
-          return { idle: false, lastError };
+          return { idle: false, lastError: error };
         }
         transientFailures += 1;
         if (transientFailures >= MAX_WAIT_TRANSIENT_FAILURES) {
-          return { idle: false, lastError };
+          return { idle: false, lastError: error };
         }
         await new Promise((resolve) => setTimeout(resolve, WAIT_RETRY_DELAY_MS));
       }
@@ -3565,29 +3573,22 @@ export default async function plugin(bb: BbPluginApi) {
       // A verdict landing seconds past the deadline is still this round's, so
       // a straggler gets a short grace before it is interrupted.
       if (!waited && !waitSignal.aborted) {
-        ({ idle: waited, lastError: waitError } = await waitForAdvisorIdle(
+        const grace = await waitForAdvisorIdle(
           advisorThreadId,
           LATE_REPLY_GRACE_MS,
           waitSignal,
-        ));
+        );
+        waited = grace.idle;
+        // The grace deadline does not turn an earlier failure into a timeout.
+        if (!isWaitTimeout(grace.lastError) || isWaitTimeout(waitError)) {
+          waitError = grace.lastError;
+        }
       }
     } finally {
       clearTimeout(finalizeTimer);
       signal?.removeEventListener("abort", onAbort);
       requestWatch.abort();
     }
-    const requestReason = waited ? null : await reviewerRequest;
-    if (!waited) {
-      stopAdvisor();
-      // A timeout is self-describing; the exception name and the reviewer's
-      // thread id are developer detail that ends up verbatim in the panel.
-      bb.log.warn(
-        requestReason === null
-          ? `Advisor review timed out: ${describeError(waitError)}`
-          : `Advisor review stopped: ${requestReason}`,
-      );
-    }
-
     let output: string | null;
     if (waited) {
       try {
@@ -3603,19 +3604,20 @@ export default async function plugin(bb: BbPluginApi) {
         return await unavailable("the reviewer finished without returning a review");
       }
     } else {
+      const requestReason = await reviewerRequest;
+      stopAdvisor();
       // A wait can fail after the reviewer already emitted its block: a steer
       // queued as another turn, or a poll dying on a dead socket. The reply is
       // still on the thread, and persisting it matters even when the caller is
       // gone — a stored finding reaches the agent as late advice.
       output = await readAdvisorReplySince(advisorThreadId, sentAtMs);
-      if (output === null) {
-        return await unavailable(
-          requestReason ??
-            (signal?.aborted
-              ? CANCELLED_REASON
-              : `the review did not finish within ${currentSettings.timeoutSeconds}s. Raise "Review timeout" in Settings → Extensions → Advisor if reviews need longer`),
-        );
-      }
+      const reason = requestReason ?? (signal?.aborted
+        ? CANCELLED_REASON
+        : isWaitTimeout(waitError)
+          ? `the review did not finish within ${currentSettings.timeoutSeconds}s. Raise "Review timeout" in Settings → Extensions → Advisor if reviews need longer`
+          : `the wait for the reviewer failed (${String(waitError)})`);
+      bb.log.warn(`Advisor review stopped: ${reason}`);
+      if (output === null) return await unavailable(reason);
     }
 
     // Repeated advice is recorded as a repeat, never softened: identical advice
