@@ -1970,6 +1970,98 @@ describe("advisor unavailability", () => {
 });
 
 describe("post-turn review scope", () => {
+  it.each([
+    { move: "successful", status: "completed", earlier: false, reviewsAtHandoff: 0 },
+    { move: "failed", status: "failed", earlier: false, reviewsAtHandoff: 1 },
+    { move: "earlier", status: "completed", earlier: true, reviewsAtHandoff: 1 },
+  ])("schedules post-turn reviews around a $move directory update", async ({
+    status,
+    earlier,
+    reviewsAtHandoff,
+  }) => {
+    const { harness, spawn } = await loadAutoAdvisor(BLOCKER_OUTPUT);
+    const primary = makeThreadResponse({
+      id: "thread-primary",
+      projectId: "project-test",
+      environmentId: "environment-test",
+      providerId: "codex",
+      visibility: "visible",
+    });
+    const previousScope = { kind: "turn", turnId: "turn-previous" };
+    const handoffScope = { kind: "turn", turnId: "turn-handoff" };
+    const continuationScope = { kind: "turn", turnId: "turn-continuation" };
+    const handoffAnswer = "The checkout is ready. Implementation continues in the next turn.";
+    const completedAnswer = "Implemented the change and ran the regression tests.";
+    const events = [
+      { seq: 42, type: "turn/completed", scope: handoffScope, data: { status: "completed" } },
+      { seq: 30, type: "turn/started", scope: handoffScope, data: {} },
+      {
+        seq: earlier ? 26 : 36,
+        type: "system/operation",
+        scope: earlier ? previousScope : handoffScope,
+        data: { operation: "environment_directory_update", status },
+      },
+    ];
+    if (earlier) {
+      events.push({ seq: 28, type: "turn/completed", scope: previousScope, data: { status: "completed" } });
+    }
+    events.sort((a, b) => b.seq - a.seq);
+    const rows = [{
+      kind: "conversation",
+      role: "assistant",
+      text: handoffAnswer,
+      sourceSeqStart: 41,
+      sourceSeqEnd: 41,
+    }];
+    harness.sdk.stub("threads.events.list", async ({
+      threadId,
+      types,
+      beforeSeq,
+      limit,
+    }: { threadId: string; types?: readonly string[]; beforeSeq?: string; limit?: string }) =>
+      threadId === primary.id
+        ? events
+          .filter((event) => (
+            (beforeSeq === undefined || event.seq < Number(beforeSeq)) &&
+            (types === undefined || types.includes(event.type))
+          ))
+          .slice(0, Number(limit ?? 100))
+        : [],
+    );
+    harness.sdk.stub("threads.timeline", async () => ({
+      rows,
+      maxSeq: events[0]?.seq ?? 0,
+    }));
+
+    await harness.emitThreadEvent("thread.idle", { thread: primary, lastAssistantText: handoffAnswer });
+    expect(spawn).toHaveBeenCalledTimes(reviewsAtHandoff);
+
+    events.unshift(
+      { seq: 59, type: "turn/completed", scope: continuationScope, data: { status: "completed" } },
+      { seq: 45, type: "turn/started", scope: continuationScope, data: {} },
+    );
+    rows.push({
+      kind: "conversation",
+      role: "assistant",
+      text: completedAnswer,
+      sourceSeqStart: 58,
+      sourceSeqEnd: 58,
+    });
+    await harness.emitThreadEvent("thread.idle", { thread: primary, lastAssistantText: completedAnswer });
+
+    const ledger = await harness.callRpc("reviewLedger", { threadId: primary.id });
+    expect(ledger).toMatchObject({
+      runs: [
+        { outcome: "reviewed", sourceSeq: 59, carriedTurns: 1 - reviewsAtHandoff },
+        { outcome: reviewsAtHandoff === 0 ? "skipped" : "reviewed", sourceSeq: 42 },
+      ],
+    });
+    if (reviewsAtHandoff === 0) {
+      expect(spawn.mock.calls[0]?.[0].prompt).toContain(handoffAnswer);
+      expect(spawn.mock.calls[0]?.[0].prompt).toContain(completedAnswer);
+    }
+  });
+
   it("skips a visible thread owned by another plugin", async () => {
     const { harness, spawn } = await loadAutoAdvisor(BLOCKER_OUTPUT);
 
