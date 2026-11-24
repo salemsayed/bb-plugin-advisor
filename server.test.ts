@@ -1651,6 +1651,53 @@ describe("advisor unavailability", () => {
     expect(stop).toHaveBeenCalledWith({ threadId: "thread-advisor" });
   });
 
+  it.each(["reviewer failure", "grace timeout"] as const)(
+    "reports an unreachable reviewer after %s",
+    async (graceResult) => {
+      const { harness } = await loadAutoAdvisor("");
+      const failure = Object.assign(
+        new Error("The reviewer thread is in status error and will not reach idle by waiting alone."),
+        { name: "ThreadWaitUnreachableError" },
+      );
+      const graceError = graceResult === "grace timeout"
+        ? new Error("ThreadWaitTimeoutError: timed out")
+        : failure;
+      const wait = vi.fn()
+        .mockRejectedValueOnce(failure)
+        .mockRejectedValue(graceError);
+      harness.sdk.stub("threads.wait", wait);
+      harness.sdk.stub("threads.interactions.list", async () => []);
+      harness.sdk.stub("threads.timeline", async ({ threadId }: { threadId: string }) =>
+        threadId === "thread-advisor" ? { rows: [], maxSeq: 0 } : timeline(42),
+      );
+
+      await harness.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({
+          id: "thread-primary",
+          projectId: "project-test",
+          environmentId: "environment-test",
+          providerId: "codex",
+          visibility: "visible",
+        }),
+        lastAssistantText: "Implementation complete.",
+      });
+
+      const expectedReason = `the wait for the reviewer failed (${String(failure)})`;
+      expect(await harness.callRpc("reviewLedger", { threadId: "thread-primary" })).toMatchObject({
+        runs: [{
+          trigger: "post-turn",
+          outcome: "unavailable",
+          reason: expectedReason,
+          advisorThreadId: "thread-advisor",
+        }],
+      });
+      expect(harness.logEntries).toContainEqual(expect.objectContaining({
+        level: "warn",
+        message: `Advisor review stopped: ${expectedReason}`,
+      }));
+    },
+  );
+
   it("settles a review at once when the reviewer waits for a command approval", async () => {
     const { harness } = await loadAdvisor(BLOCKER_OUTPUT);
     const stop = vi.fn(async () => ({ ok: true }));
