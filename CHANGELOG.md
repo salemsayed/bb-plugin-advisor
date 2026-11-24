@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.19
+
+- Do not review a turn that hands the thread to another checkout. An agent moved its thread to the checkout where an approved plan would be built and ended its turn so bb could continue there. Advisor started a post-turn review 77 ms later, before bb queued the continuation, and flagged the implementation the agent had said the continuation would do. When bb recorded a successful directory update in the completed turn, Advisor now skips that turn's automatic review and carries its evidence into the next one, so the implementation and its checks are reviewed once the continuation ends. A failed move, or a move in an earlier turn, is reviewed as before (#51, #52 by @k0d3r1s).
+
+Requires BB 0.49.0 or later and plugin SDK 0.6.132 or later.
+
 ## 0.1.18
 
 - Do not repeat an open finding while its fix waits for a review or approval. An agent asked to remove code that an open finding pointed at ended its turn with a plan that removed it and said a security reviewer and the plan's approval were still pending. The post-turn review found the code still there and named the finding's key again, which Advisor records as another round and sends to the agent, asking it to make the change before the approval it was waiting for. The open-finding rules said not to raise a finding again only because it was still open or still unresolved, but did not say that a planned fix that is not made yet is expected while the agent waits. Every review prompt now lists that among the things that are not a reason to name the key. A claim that the fix is made while the code shows otherwise, or a check that bears on it failing, still raises it again (#48, reported by @k0d3r1s).
